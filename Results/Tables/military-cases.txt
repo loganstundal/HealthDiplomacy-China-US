@@ -1,0 +1,12 @@
+|United.States        |China               |
+|:--------------------|:-------------------|
+|Azerbaijan           |Belarus             |
+|Bangladesh           |Bolivia             |
+|Botswana             |Botswana            |
+|Equatorial Guinea    |Congo - Brazzaville |
+|Ethiopia             |Congo - Kinshasa    |
+|Malaysia             |Ghana               |
+|Mozambique           |Guinea              |
+|Rwanda               |Liberia             |
+|United Arab Emirates |Mali                |
+|Zambia               |Mongolia            |
