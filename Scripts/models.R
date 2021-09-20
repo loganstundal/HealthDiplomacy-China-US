@@ -33,9 +33,11 @@ library(tidyverse)
 # library(sf)
 # library(spdep)
 # library(spatialreg)
-# library(dynsim)
 library(sandwich)
 library(texreg)
+library(lmtest)
+# library(urca)
+library(MASS)
 #---------------------------#
 
 #---------------------------#
@@ -55,7 +57,7 @@ load("Data/HealthDiplomacy.Rdata")
 #   }
 #   return(mat)
 # }
-source("Scripts/functions_dynamics.R")
+source("Scripts/functions-dynamics.R")
 #---------------------------#
 #-----------------------------------------------------------------------------#
 
@@ -64,10 +66,9 @@ source("Scripts/functions_dynamics.R")
 #-----------------------------------------------------------------------------#
 # DATA ADMIN                                                              ----
 #-----------------------------------------------------------------------------#
-d   <- d %>%
+d <- d %>%
   filter(!cname %in% c("United States", "China"),
-         !year  %in% c(as.character(2000:2002))) %>%
-  arrange(year, ccode)
+         !year  %in% c(as.character(2000:2002)))
 #-----------------------------------------------------------------------------#
 
 
@@ -76,47 +77,84 @@ d   <- d %>%
 # MODELS                                                                  ----
 #-----------------------------------------------------------------------------#
 # ----------------------------------- #
-# Formulas
+# DAH Formulas
 # ----------------------------------- #
-# forms <- list(
-#   "base" = . ~ -1 + dah_per_usa_lag + dah_per_chn_lag + cname,
-#   "full" = . ~ -1 + dah_per_usa_lag + dah_per_chn_lag + cname +
-#     vdem +
-#     exports_ln + imports_ln + pop_ln +
-#     life_expec_ln + daly_ncd_percent + daly_cd_percent
-# )
-
 forms <- list(
-  "base" = . ~ -1 + cname + year,
-  "full" = . ~ -1 + cname + year +
+  "base" = . ~ 1 + cregion + year,
+  "full" = . ~ 1 + cregion + year +
     vdem + I(vdem^2) +
-    exports_ln + imports_ln + pop_ln +
-    life_expec_ln + daly_ncd_percent + daly_cd_percent
+    ally_nonagg +
+    # ally_US.nonagg + ally_CN.nonagg +
+    # wealth_exports_ln + wealth_imports_ln +
+    wealth_gdp_ln + pop_ln +
+    dem_life_expec_ln + dem_inf_death_rate_ln +
+    dis_daly_ncd_percent + dis_daly_cd_percent
 )
+# ----------------------------------- #
 
-# health <- inf_death_ln ~
-#   -1 + cname + year +
-#   vdem + I(vdem^2) +
-#   exports_ln + imports_ln + pop_ln
-#   # dah_per_chn + dah_per_usa +
-#   # dah_per_chn_lag + dah_per_usa_lag
-#
-# m <-lm(health, data = d)
-# screenreg(m, omit.coef = "cname|year")
+
+# ----------------------------------- #
+# Testing autocorrelation
+# ----------------------------------- #
+tmp <- lapply(c("dah_per_chn", "dah_per_usa"), function(dv){
+  f <- update(forms$full, sprintf("%s ~ .", dv))
+  lm(f, d)
+  # rlm(formula = f,
+  #     data    = d,
+  #     psi     = psi.huber,
+  #     maxit   = 200)
+})
+names(tmp) <- c("chn","usa")
+screenreg(tmp, omit.coef = "cregion|cname|year")
+
+# Durbin Watson -- null hypothesis that autocorrelation in model residuals is 0.
+lapply(tmp, dwtest) # China - no; USA - yes
+
+# Breusch-Godfrey Lagrange Multiplier test
+# Tests a null of no serial correlation against alternative hypotheses of
+# serial correlation of some other order (lag structure)
+lapply(tmp, function(x){
+  coeftest(bgtest(x, order = 1, fill = NA)) %>% tail(n = 1)
+})
+# China - no; USA - yes
+
+# Augmented Dicky Fueller - integrated series test
+  # lapply(tmp, function(x){
+  #   ur.df(x$model[,1], type = "none", lags = 1) %>%
+  #     summary
+  #   })
+
+rm(tmp)
 # ----------------------------------- #
 
 
 # ----------------------------------- #
 # Models
 # ----------------------------------- #
+# Note - although the DW and BG tests do not support temporal autoregressive
+# processes in the China aid data, I include a lag here for comparability and
+# consistency with the US model. Including this lag does not substantively
+# change the results.
+
+# Note2 -- the lags of other power spending are not significant but included to
+# account for possible delayed responses. Dropping these does not substantively
+# change the results.
 chn <- lapply(forms, function(f){
   lm(formula = update(f, dah_per_chn ~ dah_per_chn_lag + dah_per_usa + dah_per_usa_lag + .),
      data    = d)
+  # rlm(formula = update(f, dah_per_chn ~ dah_per_chn_lag + dah_per_usa_lag + .),
+  #     data    = d,
+  #     psi     = psi.huber,
+  #     maxit   = 200)
 })
 
 usa <- lapply(forms, function(f){
   lm(formula = update(f, dah_per_usa ~ dah_per_usa_lag + dah_per_chn + dah_per_chn_lag + .),
      data    = d)
+  # rlm(formula = update(f, dah_per_usa ~ dah_per_usa_lag + dah_per_chn_lag + .),
+  #     data    = d,
+  #     psi     = psi.huber,
+  #     maxit   = 200)
 })
 
 mods <- c(usa, chn)
@@ -128,11 +166,15 @@ res <- lapply(mods, function(mod){
   vcv <- vcovPC(mod, cluster = ~ cname + year)
   ses <- vcv %>% diag %>% sqrt
   # ses <- NeweyWest(mod, adjust = T, lag = 1) %>% sqrt %>% diag
-  # ses <- vcovCL(mod, cluster = ~ cname, type = "HC1") %>% sqrt %>% diag
+  # ses <- vcovCL(mod, cluster = ~ cname + year, type = "HC0") %>% sqrt %>% diag
+  # ses <- vcovHC(mod, type = "HC0") %>% sqrt %>% diag
+  # ses <- vcovHAC(mod) %>% sqrt %>% diag
   tst <- cfs / ses
   n <- nrow(model.matrix(mod))
   k <- ncol(model.matrix(mod))
   pvl <- 2*pt(abs(tst), df=n-k,lower.tail= FALSE)
+
+  colnames(vcv) <- rownames(vcv) <- names(cfs)
 
   return(list("ses" = ses,
               "pvl" = pvl,
@@ -144,106 +186,144 @@ pvl <- res %>% map("pvl")
 vcv <- res %>% map("vcv")
 
 screenreg(mods,
-          omit.coef        = c("cname|year"),
+          omit.coef        = c("cregion|cname|year"),
           override.se      = ses,
           override.pvalues = pvl,
           # ci.force         = TRUE,
-          custom.header    = list("United States" = 1:2, "China" = 3:4))
+          custom.header    = list("United States" = 1:2, "China" = 3:4),
+          custom.gof.rows  = list("Region FE" = rep("Yes", 4),
+                                  "Year FE"   = rep("Yes", 4)),
+          custom.note      = paste0("%stars\n",
+                                    "Panel corrected standard errors clustered on country and year in parentheses."))
 
-# htmlreg(mods,
-#         omit.coef        = c("cname|year"),
-#         override.se      = ses,
-#         override.pvalues = pvl,
-#         custom.header    = list("United States" = 1:2, "China" = 3:4),
-#         file             = "Results/Tables/APSA-2021_NewModels.doc")
+htmlreg(mods,
+        omit.coef        = c("cregion|cname|year"),
+        override.se      = ses,
+        override.pvalues = pvl,
+        custom.header    = list("United States" = 1:2, "China" = 3:4),
+        file             = "Results/Tables/APSA-2021_DAH-Models.doc",
+        custom.gof.rows  = list("Region FE" = rep("Yes", 4),
+                                "Year FE"   = rep("Yes", 4)),
+        custom.note      = paste0("%stars\n",
+                                  "Panel corrected standard errors clustered on country and year in parentheses."))
 # ----------------------------------- #
 #-----------------------------------------------------------------------------#
 
 
 
 #-----------------------------------------------------------------------------#
-# DYNAMICS                                                                ----
+# DYNAMICS & INTERPRETATION                                               ----
 #-----------------------------------------------------------------------------#
+# ----------------------------------- #
+# Interpreting democracy parabola:
+# ----------------------------------- #
+# NOTE - these calculations do NOT take the temporal dynamics of these models
+# into account.
+dem <- quadratic(model    = mods$usa_full,
+                 variable = "vdem",
+                 sims     = 1e3,
+                 ci       = 0.95,
+                 vcv      = vcv$usa_full)
+
+head(dem$res_pred)
+head(dem$res_dydx)
+dem$vertex
+
+# ggplot(data = dem$res_pred, aes(x=x)) +
+#   geom_ribbon(aes(ymin = lb, ymax = ub), fill = "blue", alpha = 0.2) +
+#   geom_line(aes(y = y_pred)) +
+#   theme_minimal() +
+#   geom_vline(aes(xintercept = dem$vertex$mean), linetype = "dotted")
+#
+# ggplot(data = dem$res_dydx, aes(x=x)) +
+#   geom_ribbon(aes(ymin = lb, ymax = ub), fill = "blue", alpha = 0.2) +
+#   geom_line(aes(y = dydx)) +
+#   theme_minimal()
+# ----------------------------------- #
+
+
+# ----------------------------------- #
+# Dynamic responses - setup:
+# ----------------------------------- #
+sim_years <- 10
+sim_ci    <- 0.90
+# ----------------------------------- #
+
 # ----------------------------------- #
 # China responding to US
 # ----------------------------------- #
-dvl     <- "dah_per_chn_lag"
-iv      <- "dah_per_usa_lag"
-vcv_chn <- vcv$chn_full[c(dvl, iv), c(dvl, iv)]
+dvl_chn <- "dah_per_chn_lag"
+iv_chn  <- "dah_per_usa"
+vcv_chn <- vcv$chn_full[c(dvl_chn, iv_chn), c(dvl_chn, iv_chn)]
 
-dyn_chn_usa <- dynamics(model      = mods$chn_full,
-                        dv        = dvl,
-                        iv        = iv,
-                        ci        = 0.90,
-                        max_time  = 5,
+dyn_chn_usa <- dynamics(model     = mods$chn_full,
+                        dvl       = dvl_chn,
+                        iv        = iv_chn,
+                        ci        = sim_ci,
+                        max_time  = sim_years,
                         model_vcv = vcv_chn,
                         sims      = 1000,
                         tidy      = TRUE)
-# head(dyn_chn_usa)
 
 # Cumulative response - LRSS:
 b_chn    <- coef(mods$chn_full)
-lrss_chn <- MASS::mvrnorm(n     = 1e3,
-                          mu    = c(b_chn[dvl], b_chn[iv]),
-                          Sigma = vcv_chn)
 
-lrss_chn2 <- lrss_chn %>% as.data.frame %>%
-  mutate(lrss = !!sym(iv) / (1 - !!sym(dvl))) %>%
-  summarize(lrss_lb   = mean(lrss) - 1.96 * sd(lrss),
-            lrss_mean = mean(lrss),
-            lrss_ub   = mean(lrss) + 1.96 * sd(lrss))
+lrss_chn <- lrss(b_dvl     = b_chn[dvl_chn],
+                 b_iv      = b_chn[iv_chn],
+                 sims      = 1e3,
+                 ci        = 0.95,
+                 vcv       = vcv_chn,
+                 half_life = 0.9)
 
-lrss_chn2
-# lrss_lb  lrss_mean     lrss_ub
-# -0.467612 -0.2792118 -0.09081166
+# Long-run-steady-state response of Chinese DAH to 1% contemporaneous increase
+# in US DAH in the same year
+lrss_chn$lrss
 
-# In the long run, Chinese aid will decrease by 0.285 (% of yearly allocation)
-# given a one-percent increase in US health aid allocation to a country the year
-# prior. (NB, value varies by simulation. set seed)
-
-# Cumulative response half-life:
+# Temporary shocks eventually fade to 0; permanent shocks eventually accumulate
+# to the LRSS response. So how long this eventually?
+# Most common: time until 90% has faded/accumulated:
 # Calculate the 90% life of effect: i.e., time until 90% of the effect of a
 # shock fades away:
-log(1-0.9)/log(mean(lrss_chn[,dvl])) # around 1.3 years
-
-hl_chn <- lapply(lrss_chn[,dvl], function(x){
-  log(1-0.9) / log(x)
-}) %>% unlist
+lrss_chn$half_life
 # ----------------------------------- #
 
 
 # ----------------------------------- #
 # US responding to China
 # ----------------------------------- #
-dvl     <- "dah_per_usa_lag"
-iv      <- "dah_per_chn_lag"
-vcv_usa <- vcv$usa_full[c(dvl, iv), c(dvl, iv)]
+dvl_usa <- "dah_per_usa_lag"
+iv_usa  <- "dah_per_chn"
+vcv_usa <- vcv$usa_full[c(dvl_usa, iv_usa), c(dvl_usa, iv_usa)]
 
 dyn_usa_chn <- dynamics(model     = mods$usa_full,
-                        dv        = dvl,
-                        iv        = iv,
+                        dvl       = dvl_usa,
+                        iv        = iv_usa,
                         ci        = 0.90,
-                        max_time  = 5,
+                        max_time  = sim_years,
                         model_vcv = vcv_usa,
                         sims      = 1000,
                         tidy      = TRUE)
-# head(dyn_usa_chn)
 
 # Cumulative response - LRSS:
 b_usa    <- coef(mods$usa_full)
-lrss_usa <- MASS::mvrnorm(n     = 1e3,
-                          mu    = c(b_usa[dvl], b_usa[iv]),
-                          Sigma = vcv_usa)
 
-lrss_usa <- lrss_usa %>% as.data.frame %>%
-  mutate(lrss = !!sym(iv) / (1 - !!sym(dvl))) %>%
-  summarize(lrss_lb   = mean(lrss) - 1.96 * sd(lrss),
-            lrss_mean = mean(lrss),
-            lrss_ub   = mean(lrss) + 1.96 * sd(lrss))
+lrss_usa <- lrss(b_dvl     = b_usa[dvl_usa],
+                 b_iv      = b_usa[iv_usa],
+                 sims      = 1e3,
+                 ci        = 0.95,
+                 vcv       = vcv_usa,
+                 half_life = 0.9)
 
-lrss_usa
-# lrss_lb   lrss_mean     lrss_ub
-# -0.08814593 -0.04151185 0.005122227
+# Long-run-steady-state response of Chinese DAH to 1% contemporaneous increase
+# in US DAH in the same year
+lrss_usa$lrss
+
+# Temporary shocks eventually fade to 0; permanent shocks eventually accumulate
+# to the LRSS response. So how long this eventually?
+# Most common: time until 90% has faded/accumulated:
+# Calculate the 90% life of effect: i.e., time until 90% of the effect of a
+# shock fades away:
+lrss_usa$half_life
 # ----------------------------------- #
 
 
@@ -261,8 +341,8 @@ plt_main <- ggplot(data = plt_data, aes(x = time)) +
   scale_color_manual(values = c("gray40","gray40")) +
 
   scale_x_continuous(name   = "Years",
-                     breaks = seq(1,5,1),
-                     labels = as.character(seq(1,5,1))) +
+                     breaks = seq(1,sim_years,1),
+                     labels = as.character(seq(1,sim_years,1))) +
 
   theme(
     panel.background   = element_rect(fill = NA,       color = "black", size = 0.1),
@@ -285,12 +365,14 @@ plt_main <- ggplot(data = plt_data, aes(x = time)) +
   ) +
 
   labs(title    = "Great Power: Health aid responsiveness",
-       y        = "Aid allocation change (%)",
-       subtitle = "Five year predicted response to 1% increase in allocations of the other power in the year prior",
+       y        = "Health aid allocation change (%)",
+       subtitle = "Ten year predicted response to 1% increase in allocations of the other power",
        caption  = "Based on estimates of full model with controls.\nConfidence intervals computed with parametric simulation.")
 
+plt_main
+
 ggsave(plot     = plt_main,
-       filename = "Results/Figures/APSA-2021_main.png",
+       filename = "Results/Figures/APSA-2021_DAH-Response.png",
        width    = 6.5,
        height   = 3.0,
        units    = "in",
@@ -303,49 +385,67 @@ ggsave(plot     = plt_main,
 #-----------------------------------------------------------------------------#
 # HEALTH OUTCOME MODELS                                                   ----
 #-----------------------------------------------------------------------------#
-dvs <- c("life_expec", "inf_death", "daly_ncd_rate", "daly_cd_rate")
-
-# Sample: only countries receiving US or Chinese health aid:
-d2 <- d %>% filter(dah_per_usa != 0, dah_per_chn != 0,
-                   !year %in% as.character(2000:2002)) %>%
-  mutate(across(.cols = all_of(dvs),
-                .fns  = ~log(.x),
-                .names= "{col}_ln")) %>%
-  group_by(cname) %>%
-  mutate(across(.cols = all_of(c(dvs, paste0(dvs, "_ln"))),
-                .fns  = list("lag"      = ~lag(.x, n = 1),
-                             "diff"     = ~.x - lag(.x, n = 1),
-                             "diff_lag" = ~lag(lag(.x, n = 1), n = 1)),
-                .names= "{.col}_{.fn}")) %>%
-  ungroup
-
+# ----------------------------------- #
+# Setup: DVs and formula
+# ----------------------------------- #
+dvs <- c("dem_life_expec", "dem_inf_death_rate",
+         "dis_daly_ncd_rate", "dis_daly_cd_rate") %>%
+  paste0(., "_ln_diff")
 
 health <- . ~
-  vdem + I(vdem^2) +
-  gdp_ln + exports_ln + imports_ln +
+  vdem + I(vdem^2) + ally_nonagg +
+  # gdp_ln + exports_ln + imports_ln +
+  wealth_gdp_ln + I(wealth_gdp_ln^2) + pop_ln +
   dah_per_chn +
   dah_per_usa +
-  cname + year
+  cregion + year
+# ----------------------------------- #
 
-dvs <- paste0(dvs, "_ln_diff")
 
-health_mods <- lapply(dvs, function(dv){
-  f <- update(health, sprintf("%s ~ %s_lag + .", dv, dv))
-  # f <- update(health, sprintf("%s ~ .", dv))
-  m <- lm(f, data = d2)
+# ----------------------------------- #
+# Health models - testing autocorrelation
+# ----------------------------------- #
+# Test for autocorrelation
+tmp <- lapply(dvs, function(dv){
+  f <- update(health, sprintf("%s ~ .", dv))
+  m <- lm(f, data = d)
   return(m)
 })
 
+# Durbin Watson -- null hypothesis that autocorrelation in model residuals is 0.
+lapply(tmp, dwtest) # All - yes
+
+# Breusch-Godfrey Lagrange Multiplier test
+# Tests a null of no serial correlation against alternative hypotheses of
+# serial correlation of some other order (lag structure)
+lapply(tmp, function(x){
+  coeftest(bgtest(x, order = 1, fill = NA)) %>% tail(n = 1)
+})
+# All - yes
+# ----------------------------------- #
+
+
+# ----------------------------------- #
+# Health Models
+# ----------------------------------- #
+# Fit health models with one dv lag
+health_mods <- lapply(dvs, function(dv){
+  f <- update(health, sprintf("%s ~ %s_lag + .", dv, dv))
+  m <- lm(f, data = d)
+  return(m)
+})
 names(health_mods) <- dvs
 
 res <- lapply(health_mods, function(mod){
   cfs <- coefficients(mod)
-  vcv <- vcovCL(mod, cluster = ~ cname)
+  vcv <- vcovPC(mod, cluster = ~ cname + year)
   ses <- vcv %>% diag %>% sqrt
   tst <- cfs / ses
   n <- nrow(model.matrix(mod))
   k <- ncol(model.matrix(mod))
   pvl <- 2*pt(abs(tst), df=n-k,lower.tail= FALSE)
+
+  colnames(vcv) <- rownames(vcv) <- names(cfs)
 
   return(list("ses" = ses,
               "pvl" = pvl,
@@ -357,13 +457,55 @@ pvl <- res %>% map("pvl")
 vcv <- res %>% map("vcv")
 
 screenreg(health_mods,
-          digits           = 5,
-          omit.coef        = c("cname|year"),
+          digits           = 4,
+          omit.coef        = c("cregion|cname|year"),
           override.se      = ses,
-          override.pvalues = pvl
-)
+          override.pvalues = pvl,
+          custom.gof.rows  = list("Region FE" = rep("Yes", 4),
+                                  "Year FE"   = rep("Yes", 4)),
+          custom.note      = paste0("%stars\n",
+                                    "Panel corrected standard errors clustered on country and year in parentheses."))
+
+htmlreg(health_mods,
+        digits           = 4,
+        omit.coef        = c("cregion|cname|year"),
+        override.se      = ses,
+        override.pvalues = pvl,
+        file             = "Results/Tables/APSA-2021_Health-Models.doc",
+        custom.gof.rows  = list("Region FE" = rep("Yes", 4),
+                                "Year FE"   = rep("Yes", 4)),
+        custom.note      = paste0("%stars\n",
+                                  "Panel corrected standard errors clustered on country and year in parentheses."))
+# ----------------------------------- #
 
 
+# ----------------------------------- #
+# Health model effects
+# ----------------------------------- #
+mod <- "dem_inf_death_rate_ln_diff"
+m   <- health_mods[[mod]]
+dvl <- paste0(mod, "_lag")
+iv  <- "dah_per_usa"
+
+health_bs  <- coef(m)[c(dvl, iv)]
+health_vcv <- vcv[[mod]][c(dvl,iv),c(dvl,iv)]
+
+
+lrss_life <- lrss(b_dvl     = abs(health_bs[1]),
+                  b_iv      = health_bs[2],
+                  sims      = 1e3,
+                  ci        = 0.95,
+                  vcv       = life_vcv,
+                  half_life = 0.9,
+                  log_transform = TRUE)
+
+lrss_life
+
+# These are suspiciously small confidence intervals. Likely need to perform
+# log_transform PRIOR to post-sampling summarize()
+
+
+# ALTHOUGH IT WORKS BELOW....?
 # ... why do I always, always, ALWAYS forget this.... because I suck.
 # https://data.library.virginia.edu/interpreting-log-transformations-in-a-linear-model/
 # Log Dv only:
@@ -397,6 +539,7 @@ health_effects <- sapply(dvs, function(dv){
   r <- lrss(model = m, dvl = dvl, iv = iv, vcv = v)
   return(r)
 })
+# ----------------------------------- #
 #-----------------------------------------------------------------------------#
 
 
@@ -405,7 +548,7 @@ health_effects <- sapply(dvs, function(dv){
 # SAVE                                                                    ----
 #-----------------------------------------------------------------------------#
 #save.image()
-#rm(list = ls())
+rm(list = ls())
 #-----------------------------------------------------------------------------#
 
 
@@ -418,11 +561,6 @@ health_effects <- sapply(dvs, function(dv){
 # ----------------------------------- #
 # Setup
 # ----------------------------------- #
-d   <- d %>%
-  filter(!cname %in% c("United States", "China"),
-         !year  %in% c(as.character(2000:2002))) %>%
-  arrange(year, ccode)
-
 # Nb. DAH questionable for China before 2002
 yrs <- as.character(unique(d$year))
 # ----------------------------------- #
@@ -458,8 +596,18 @@ lapply(lmtests, summary)
 # Interesting... the China model supports spatial lag process while the US
 # model supports a spatial error process.
 
-m <- errorsarlm(formula = f_us, data = d, listw = lw)
-screenreg(m, omit.coef = "cname|year")
+forms_sp <- list(
+  "chn" = update(forms$full,
+                 dah_per_chn ~ dah_per_chn_lag + dah_per_usa + dah_per_usa_lag + .),
+  "usa" = update(forms$full,
+                 dah_per_usa ~ dah_per_usa_lag + dah_per_chn + dah_per_chn_lag + .)
+)
+
+spe <- lapply(forms_sp, function(x){
+  errorsarlm(formula = x, data = d, listw = lw)
+})
+
+screenreg(spe, omit.coef = "cregion|cname|year")
 # ----------------------------------- #
 #-----------------------------------------------------------------------------#
 

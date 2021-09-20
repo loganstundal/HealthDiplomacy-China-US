@@ -1,6 +1,9 @@
 require(dplyr)
 require(tidyr)
 
+# ----------------------------------- #
+# Response curve
+# ----------------------------------- #
 # Function to compute response curve
 response_curve <- function(time_periods,
                            coef){
@@ -26,9 +29,13 @@ response_curve <- function(time_periods,
   # res <- res %>% arrange(time)
   return(res)
 }
+# ----------------------------------- #
 
 
-dynamics <- function(model, dv, iv,
+# ----------------------------------- #
+# Dynamic response w/ parametric simulation
+# ----------------------------------- #
+dynamics <- function(model, dvl, iv,
                      model_vcv= NULL,
                      sims     = 1000,
                      max_time = 10,
@@ -102,4 +109,120 @@ dynamics <- function(model, dv, iv,
   }
   return(plt_data)
 }
+# ----------------------------------- #
 
+
+# ----------------------------------- #
+# LRSS & Half-Life calculations
+# ----------------------------------- #
+lrss <- function(b_dvl, b_iv, sims = 1e3, vcv, half_life = NULL,
+                 ci = 0.95,
+                 log_transform = FALSE){
+
+  crit <- qnorm(ci + (1-ci)/2)
+
+  res <- MASS::mvrnorm(n     = sims,
+                       mu    = c(b_dvl, b_iv),
+                       Sigma = vcv)
+  res2 <- res %>%
+    as.data.frame %>%
+    rename(dvl = 1, iv = 2) %>%
+    mutate(lrss = iv / (1 - dvl)) %>%
+    summarize(lrss_lb   = mean(lrss) - ci * sd(lrss),
+              lrss_mean = mean(lrss),
+              lrss_ub   = mean(lrss) + ci * sd(lrss))
+
+  if(log_transform){
+    res2 <- lapply(res2, function(b){(exp(b) - 1) * 100})
+  }
+
+  if(!is.null(half_life)){
+    log(1-half_life)/log(mean(res[,1])) # around 2.3 years
+
+    hl <- log(1 - half_life) / log(res[,1])
+
+    hl <- data.frame(
+      "hl_lb" = mean(hl) - ci * sd(hl),
+      "hl"    = mean(hl),
+      "hl_ub" = mean(hl) + ci * sd(hl)
+    )
+
+    return(list("lrss"      = res2,
+                "half_life" = hl))
+  } else{
+    return(res2)
+  }
+}
+# ----------------------------------- #
+
+
+# ----------------------------------- #
+# Quadratic effect for model sqare terms
+# ----------------------------------- #
+quadratic <- function(model, variable,
+                      sims = 1e3,
+                      ci   = 0.95,
+                      vcv){
+
+  crit <- qnorm(ci + (1-ci)/2)
+
+  # Collect parameters
+  bs <- coef(model)
+  bs <- bs[str_detect(names(bs), variable)]
+  # Ensure squared term is in spot 2
+  bs <- bs[names(bs) %>% sort %>% rev]
+
+  # Collect variances and covariances
+  vcv <- vcv[names(bs), names(bs)]
+
+  # Collect independent variable
+  x <- model.matrix(model)[,variable]
+  x <- seq(min(x), max(x), length.out = 100)
+
+  # Simulation
+  y_pred <- matrix(NA, nrow = sims, ncol = 100)
+  dydx   <- matrix(NA, nrow = sims, ncol = 100)
+  vertex <- matrix(NA, nrow = sims, ncol = 1)
+  for(i in 1:sims){
+    b_sim <- mvrnorm(n = 1, mu = bs, Sigma = vcv)
+    yp    <- b_sim[1] * x + b_sim[2] * x^2
+    dx    <- b_sim[1] + 2 * b_sim[2] * x
+    vtx   <- -b_sim[1] / (2 * b_sim[2])
+
+    y_pred[i, ] <- yp
+    dydx[i, ]   <- dx
+    vertex[i, 1]<- vtx
+  }
+
+  # Tidy simulation results
+  res_pred <- data.frame(
+    "x"      = x,
+    "y_pred" = apply(y_pred, 2, mean),
+    "se"     = apply(y_pred, 2, sd)
+  ) %>%
+    mutate(lb = y_pred - crit * (se / sqrt(100)),
+           ub = y_pred + crit * (se / sqrt(100)))
+
+  res_dydx <- data.frame(
+    "x"    = x,
+    "dydx" = apply(dydx, 2, mean),
+    "se"   = apply(dydx, 2, sd)
+  ) %>%
+    mutate(lb = dydx - crit * se,
+           ub = dydx + crit * se)
+
+  vertex <- data.frame(
+    "lb"   = mean(vertex) - crit * sd(vertex),
+    "mean" = mean(vertex),
+    "ub"   = mean(vertex) + crit * sd(vertex)
+  )
+
+  res <- list(
+    "res_pred" = res_pred,
+    "res_dydx" = res_dydx,
+    "vertex"   = vertex
+  )
+
+  return(res)
+}
+# ----------------------------------- #

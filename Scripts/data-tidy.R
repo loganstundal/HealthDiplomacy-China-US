@@ -181,7 +181,9 @@ gdp <- read_xlsx("Data/Controls/un_stats-gdp.xlsx") %>%
                 .names = "{.col}_ln")) %>%
   mutate(cid         = paste(ccode, year, sep = "_"),
          net_exports = exports - imports) %>%
-  select(cid, everything(), -ccode, -year)
+  select(cid, everything(), -ccode, -year) %>%
+  rename_with(.cols = !cid,
+              .fn  = ~paste0("wealth_", .x))
 
 # GDP Per capita
 gdppc <- read_xlsx("Data/Controls/un_stats-gdp_pc.xlsx") %>%
@@ -199,7 +201,9 @@ gdppc <- read_xlsx("Data/Controls/un_stats-gdp_pc.xlsx") %>%
   group_by(cid) %>%
   summarize(gdp_pc = mean(gdp_pc)) %>%
   ungroup %>%
-  mutate(gdp_pc_ln = log(gdp_pc))
+  mutate(gdp_pc_ln = log(gdp_pc)) %>%
+  rename_with(.cols = !cid,
+              .fn  = ~paste0("wealth_", .x))
 # ----------------------------------- #
 
 
@@ -226,13 +230,13 @@ pop <- read_csv("Data/Controls/un_stats-pop_thousands.csv") %>%
 # Demographics (Source: UN Stats)
 # ----------------------------------- #
 dem <- read_csv("Data/Controls/un_stats-demographics.csv") %>%
-  rename(death_rate = `Crude death rate (deaths per 1,000 population)`,
-         life_expec = `Life expectancy at birth, both sexes combined (years)`,
-         inf_death  = `Infant mortality rate (infant deaths per 1,000 live births)`,
-         und5_death = `Under-five mortality (deaths under age 5 per 1,000 live births)`,
-         birth_rate = `Crude birth rate (births per 1,000 population)`,
-         fert_rate  = `Total fertility (live births per woman)`,
-         pop_gr_rate= `Population growth rate (percentage)`) %>%
+  rename(death_rate      = `Crude death rate (deaths per 1,000 population)`,
+         life_expec      = `Life expectancy at birth, both sexes combined (years)`,
+         inf_death_rate  = `Infant mortality rate (infant deaths per 1,000 live births)`,
+         und5_death_rate = `Under-five mortality (deaths under age 5 per 1,000 live births)`,
+         birth_rate      = `Crude birth rate (births per 1,000 population)`,
+         fert_rate       = `Total fertility (live births per woman)`,
+         pop_gr_rate     = `Population growth rate (percentage)`) %>%
   filter(year %in% yr_min:yr_max) %>%
   gen_cc(., "country") %>%
   drop_na(ccode) %>%
@@ -242,7 +246,9 @@ dem <- read_csv("Data/Controls/un_stats-demographics.csv") %>%
                 .fns  = ~ log(.x),
                 .names= "{.col}_ln")) %>%
   # Note: warning of NaNs due to pop_gr_rate_ln which is dropped
-  select(cid, everything(), -ccode, -year, -pop_gr_rate_ln)
+  select(cid, everything(), -ccode, -year, -pop_gr_rate_ln) %>%
+  rename_with(.cols = !cid,
+              .fn  = ~paste0("dem_", .x))
 # ----------------------------------- #
 
 
@@ -267,24 +273,27 @@ dis <- read_csv("Data/Controls/GHD-Disease/GBD_2019.csv") %>%
   rename_with(., function(x){str_replace_all(x, "_Communicable, maternal, neonatal, and nutritional diseases_",
                                              "_CD_")}, everything()) %>%
   rename_with(., function(x){str_replace_all(x, "s [(]Disability-Adjusted Life Years[)]", "")}, everything()) %>%
-  mutate(cid = paste(ccode, year, sep = "_")) %>%
-  select(cid, everything(), -ccode, -year)
+  mutate(cid = paste(ccode, year, sep = "_"),
+         across(.cols = c(DALY_NCD_Rate, DALY_CD_Rate),
+                .fns  = ~log(.x),
+                .names= "{.col}_ln")) %>%
+  select(cid, everything(), -ccode, -year) %>%
+  rename_with(.cols = !cid,
+              .fn  = ~paste0("dis_", .x))
 # ----------------------------------- #
 
 
 # ----------------------------------- #
 # Democracy Indicators (Source: V-Dem)
 # ----------------------------------- #
-"
-v2x_polyarchy - Electoral Democracy Index (D)
+"v2x_polyarchy - Electoral Democracy Index (D)
 To what extent is the ideal of electoral democracy in its fullest sense achieved?
 
 In the V-Dem conceptual scheme, electoral democracy is understood as an
 essential element of any other conception of representative democracy -
 liberal, participatory, deliberative, egalitarian, or some other.
 
-Scale: Interval, from low to high (0-1)
-"
+Scale: Interval, from low to high (0-1)"
 
 vdem <- vdemdata::vdem %>%
   select(country_name, year,
@@ -296,6 +305,25 @@ vdem <- vdemdata::vdem %>%
          cid  = paste(ccode, year, sep = "_")) %>%
   select(cid, vdem)
 # ----------------------------------- #
+
+
+# ----------------------------------- #
+# Alliances (Source: ATOP)
+# ----------------------------------- #
+ally <- read_csv("Data/Controls/ATOP 5_0/atop5_0ddyr.csv") %>%
+  filter(stateA %in% c(2, 710), year >= 2000) %>%
+  rename(ccode = stateB) %>%
+  mutate(ally  = case_when(stateA == 2 ~ "ally_US", TRUE ~ "ally_CN")) %>%
+  select(ccode, year, ally, defense, nonagg) %>%
+  pivot_wider(.,
+              id_cols     = c(ccode, year),
+              names_from  = ally,
+              # names_sep   = ".",
+              names_glue  = "{ally}.{.value}",
+              values_from = c(defense, nonagg)) %>%
+  mutate(cid = paste(ccode, year, sep = "_")) %>%
+  select(-ccode, -year)
+# ----------------------------------- #
 #-----------------------------------------------------------------------------#
 
 
@@ -303,6 +331,10 @@ vdem <- vdemdata::vdem %>%
 #-----------------------------------------------------------------------------#
 # MERGE DATA / PANEL                                                      ----
 #-----------------------------------------------------------------------------#
+
+# ----------------------------------- #
+# Merge data
+# ----------------------------------- #
 d <- pnl %>%
   left_join(., dah,   by = "cid") %>%
   left_join(., gdp,   by = "cid") %>%
@@ -313,35 +345,58 @@ d <- pnl %>%
   left_join(., vdem,  by = "cid") %>%
   janitor::clean_names() %>%
 
+  left_join(., ally,  by = "cid") %>%
+
   # Code NA DAH_ to 0. Intuition: no reported DAH indicates no provided DAH
   mutate(across(.cols = starts_with("dah_"),
                 .fns  = ~replace_na(.x, 0))) %>%
 
+  # Tidy alliance data:
+  mutate(across(.cols = contains("ally_"),
+                .fns  = ~replace_na(.x, 0)),
+         across(.cols = c(ccode, year),
+                .fns  = ~as.factor(.x)),
+         cname = countrycode::countrycode(ccode, "cown", "country.name")) %>%
+  mutate(ally_nonagg = case_when(
+    (ally_US.nonagg == 0 & ally_CN.nonagg == 0) ~ "No pacts",
+    (ally_US.nonagg == 1 & ally_CN.nonagg == 0) ~ "US NonAgg",
+    (ally_US.nonagg == 0 & ally_CN.nonagg == 1) ~ "CN NonAgg",
+    (ally_US.nonagg == 1 & ally_CN.nonagg == 1) ~ "Both NonAgg"
+  )) %>%
+  mutate(ally_nonagg = factor(ally_nonagg,
+                              levels = c("No pacts", "US NonAgg",
+                                         "CN NonAgg", "Both NonAgg")),
+         across(.cols = c(ally_US.defense, ally_CN.defense,
+                          ally_US.nonagg,  ally_CN.nonagg),
+                .fns  = ~ as.factor(.x))) %>%
+
   # Create temporal variables:
-  group_by(ccode) %>%
-  mutate(across(.cols  = c(dah_usd_chn, dah_usd_usa, dah_per_chn, dah_per_usa),
-                .fns   = ~ dplyr::lag(.x, 1),
-                .names = "{.col}_lag")) %>%
-  mutate(across(.cols  = c(dah_usd_chn, dah_usd_usa, dah_per_chn, dah_per_usa),
-                .fns   = ~ .x - dplyr::lag(.x, 1),
-                .names = "{.col}_diff")) %>%
-  mutate(across(.cols  = contains("_diff"),
-                .fns   = ~ dplyr::lag(.x, 1),
-                .names = "{.col}_lag")) %>%
+  group_by(cname) %>%
+  mutate(across(.cols = c(starts_with("dah_"),
+                          starts_with("dem_"),
+                          c(dis_daly_ncd_rate_ln, dis_daly_cd_rate_ln)),
+                .fns  = list("lag"      = ~lag(.x, n = 1),
+                             "diff"     = ~.x - lag(.x, n = 1),
+                             "diff_lag" = ~lag(lag(.x, n = 1), n = 1)),
+                .names= "{.col}_{.fn}")) %>%
   ungroup %>%
 
+  # Disease data "dis" begin in 2000, thus (filter >= 2000) below for this
+  # check.
   # Note - all missing vals occur in Micro-states and Taiwan.
   # Drop these as is typical (and Taiwan bc China...). See code commented out
   # below for validation of which cases are dropped. Note, do not run the
   # drop_na() command for the code below to work.
-  #
-  # Disease data "dis" begin in 2000, thus (filter >= 2000) below for this
-  # check.
+
   drop_na() %>%
+
+  arrange(year, ccode) %>%
 
   # Arrange variables
   select(cid, ccode, year, cname, cregion,
          starts_with("dah_"),
+         starts_with("dem_"),
+         starts_with("dis_"),
          everything(),
          geometry) %>%
   mutate(ccode = as.factor(ccode),
@@ -351,6 +406,7 @@ d <- pnl %>%
 # Counties with missing values dropped
 # miss <- d[rowSums(is.na(d)) > 0,] %>% filter(year >= 2000)
 # table(miss$cname)
+# ----------------------------------- #
 #-----------------------------------------------------------------------------#
 
 
