@@ -32,12 +32,15 @@ rm(list = ls())
 library(tidyverse)
 library(sf)
 library(kableExtra)
+library(descr)
 #---------------------------#
 
 #---------------------------#
 # Load data
 #---------------------------#
-load("Data/HealthDiplomacy.Rdata")
+d <- read_csv("data/Military-HD-Codings/Sources-BrookRussell-Tidy.csv")
+
+# load("Data/HealthDiplomacy.Rdata")
 #---------------------------#
 #-----------------------------------------------------------------------------#
 
@@ -104,16 +107,26 @@ kbl(x      = data.frame("United States" = us_mil, "China" = cn_mil),
 # MILITARY SF TIDY                                                        ----
 #-----------------------------------------------------------------------------#
 # ----------------------------------- #
+# Convert sample country names to ccodes
+# ----------------------------------- #
+us_mil <- countrycode::countrycode(us_mil, "country.name", "cown")
+cn_mil <- countrycode::countrycode(cn_mil, "country.name", "cown")
+# ----------------------------------- #
+
+
+# ----------------------------------- #
 # SF data
 # ----------------------------------- #
-mil <- cshapes::cshp(date = as.Date("2010-06-01"), useGW = FALSE) %>%
-  mutate(cname = countrycode::countrycode(cowcode, "cown", "country.name")) %>%
-  select(cname) %>%
-  mutate(val = case_when(cname %in% us_mil & cname %in% cn_mil ~ "Both",
-                         cname %in% us_mil ~ "US military",
-                         cname %in% cn_mil ~ "CN military",
-                         TRUE ~ NA_character_)) %>%
-  mutate(val = factor(val, levels = c("US military", "CN military", "Both"))) %>%
+mil <- cshapes::cshp(date = as.Date("2016-06-01"), useGW = FALSE) %>%
+  # mutate(cname = countrycode::countrycode(cowcode, "cown", "country.name")) %>%
+  # dplyr::select(cname) %>%
+  rename(ccode = cowcode) %>%
+  mutate(val = case_when(ccode %in% us_mil & ccode %in% cn_mil ~ "Both",
+                         ccode %in% us_mil ~ "US military",
+                         ccode %in% cn_mil ~ "CN military",
+                         TRUE ~ "Neither")) %>%
+  mutate(val = factor(val, levels = c("US military", "CN military",
+                                      "Both", "Neither"))) %>%
   rmapshaper::ms_simplify(., keep = 0.05, keep_shapes = TRUE) %>%
   st_transform(., crs = "+proj=robin")
 # ----------------------------------- #
@@ -122,18 +135,28 @@ mil <- cshapes::cshp(date = as.Date("2010-06-01"), useGW = FALSE) %>%
 # ----------------------------------- #
 # Factors to explore military health presence
 # ----------------------------------- #
-dvs <- c("life_expec", "inf_death", "daly_ncd_rate", "daly_cd_rate",
-         "imports_ln", "exports_ln", "gdp_ln", "vdem")
+dvs <- c("dem_life_expec_ln", "dem_inf_death_rate_ln",
+         "dis_daly_ncd_rate_ln", "dis_daly_cd_rate_ln",
+         "wealth_imports_ln", "wealth_exports_ln", "wealth_gdp_ln",
+         "vdem",
+         "ally_US.nonagg", "ally_CN.nonagg"
+         )
+
 health <- d %>%
   st_drop_geometry() %>%
-  select(cname, !!dvs) %>%
-  group_by(cname) %>%
-  summarize(across(.fns  = mean)) %>%
+  dplyr::select(ccode, !!dvs) %>%
+  mutate(ccode = as.integer(as.character(ccode))) %>%
+  group_by(ccode) %>%
+  summarize(across(.cols = all_of(dvs[1:8]),
+                   .fns  = mean),
+            across(.cols = starts_with("ally_"),
+                   .fns  = ~as.numeric(str_detect(max(as.numeric(.x)), "2")))) %>%
   ungroup
 
-mil <- left_join(mil, health, by = "cname") %>%
-  mutate(us_mil = case_when(cname %in% us_mil ~ 1, TRUE ~ 0),
-         cn_mil = case_when(cname %in% cn_mil ~ 1, TRUE ~ 0))
+mil <- left_join(mil, health, by = "ccode") %>%
+  mutate(us_mil = case_when(ccode %in% us_mil ~ 1, TRUE ~ 0),
+         cn_mil = case_when(ccode %in% cn_mil ~ 1, TRUE ~ 0)) %>%
+  drop_na()
 
 rm(health)
 # ----------------------------------- #
@@ -144,6 +167,45 @@ rm(health)
 #-----------------------------------------------------------------------------#
 # MILITARY PATTERNS                                                       ----
 #-----------------------------------------------------------------------------#
+
+# ----------------------------------- #
+# Ally Status
+# ----------------------------------- #
+# Does having a US non-aggression pact predict US Military health involvement?
+# YES - sample of countries with US military health aid less likely to have US non-agg
+CrossTable(x = mil$ally_US.nonagg,
+           y = mil$us_mil,
+           chisq      = TRUE,
+           expected   = TRUE,
+           row.labels = TRUE)
+mil$country_name[(mil$us_mil & !mil$ally_US.nonagg)]
+
+# Does having a CN non-aggression pact predict US Military health involvement?
+# NO
+CrossTable(x = mil$ally_CN.nonagg,
+           y = mil$us_mil,
+           chisq      = TRUE,
+           expected   = TRUE,
+           row.labels = TRUE)
+
+# Does having a CN non-aggression pact predict CN Military health involvement?
+# NO
+CrossTable(x = mil$ally_CN.nonagg,
+           y = mil$cn_mil,
+           chisq      = TRUE,
+           expected   = TRUE,
+           row.labels = TRUE)
+
+# Does having a US non-aggression pact predict CN Military health involvement?
+# YES - sample of countries with CN military health aid less likely to have US non-agg
+CrossTable(x = mil$ally_US.nonagg,
+           y = mil$cn_mil,
+           chisq      = TRUE,
+           expected   = TRUE,
+           row.labels = TRUE)
+mil$country_name[(mil$cn_mil & !mil$ally_US.nonagg)]
+# ----------------------------------- #
+
 # ----------------------------------- #
 # T-Tests
 # ----------------------------------- #
@@ -171,7 +233,10 @@ tidy_t <- function(x){
 outcome <- function(dv){
   print(dv)
   x <- res %>% map(dv)
-  for(i in 1:2){cat(tidy_t(x[[i]]))}
+  for(i in 1:2){
+    cat(ifelse(i == 1, "US\n", "CN\n"))
+    cat(tidy_t(x[[i]]))
+    }
   cat(paste(paste(rep("+",80), collapse = "") %>% noquote, "\n"))
 }
 
@@ -187,7 +252,7 @@ rm(tidy_t, outcome, dvs)
 # MILITARY DIPLOMACY MAP                                                  ----
 #-----------------------------------------------------------------------------#
 plt_mil <- ggplot(data = mil) +
-  geom_sf(aes(fill = val), color = "gray70", size = 0.1) +
+  geom_sf(aes(fill = val), color = "gray50", size = 0.1) +
   scale_fill_viridis_d(na.translate = F) +
   theme(
     panel.background = element_rect(fill = NA, size = 0.1, color = "black"),
@@ -199,17 +264,18 @@ plt_mil <- ggplot(data = mil) +
     legend.direction = "horizontal",
     legend.key.size    = unit(2, "mm"),
     legend.margin      = margin(-3.5, 0, 0, 1, "mm"),
-    legend.text        = element_text(size = 12/.pt),
-    plot.title         = element_text(size = 16/.pt),
-    plot.subtitle      = element_text(size = 14/.pt),
-    plot.caption       = element_text(size = 12/.pt)
-  ) +
-  labs(title = "US & China - Military health aid sample")
+    legend.text        = element_text(size = 20/.pt),
+    # plot.title         = element_text(size = 16/.pt),
+    # plot.subtitle      = element_text(size = 14/.pt),
+    # plot.caption       = element_text(size = 12/.pt)
+  )
+# +
+#   labs(title = "US & China - Military health aid sample")
 
 ggsave(plot     = plt_mil,
        filename = "Results/Figures/APSA-2021_military-sample.png",
-       width    = 3.5,
-       height   = 2.0,
+       width    = 6.5,
+       height   = 3.0,
        units    = "in",
        dpi      = 350)
 #-----------------------------------------------------------------------------#

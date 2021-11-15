@@ -36,7 +36,7 @@ library(tidyverse)
 library(sandwich)
 library(texreg)
 library(lmtest)
-# library(urca)
+library(urca)
 library(MASS)
 #---------------------------#
 
@@ -69,6 +69,10 @@ source("Scripts/functions-dynamics.R")
 d <- d %>%
   filter(!cname %in% c("United States", "China"),
          !year  %in% c(as.character(2000:2002)))
+
+
+# Set seed - for reproducible parametric simulation estimates
+set.seed(1)
 #-----------------------------------------------------------------------------#
 
 
@@ -196,6 +200,9 @@ screenreg(mods,
           custom.note      = paste0("%stars\n",
                                     "Panel corrected standard errors clustered on country and year in parentheses."))
 
+coeftest(mods$usa_full, vcov = vcv$usa_full) %>% confint(., level = 0.95) %>% round(., 2) %>% .["dah_per_chn",]
+coeftest(mods$chn_full, vcov = vcv$chn_full) %>% confint(., level = 0.95) %>% round(., 2) %>% .["dah_per_usa",]
+
 htmlreg(mods,
         omit.coef        = c("cregion|cname|year"),
         override.se      = ses,
@@ -229,16 +236,16 @@ head(dem$res_pred)
 head(dem$res_dydx)
 dem$vertex
 
-# ggplot(data = dem$res_pred, aes(x=x)) +
-#   geom_ribbon(aes(ymin = lb, ymax = ub), fill = "blue", alpha = 0.2) +
-#   geom_line(aes(y = y_pred)) +
-#   theme_minimal() +
-#   geom_vline(aes(xintercept = dem$vertex$mean), linetype = "dotted")
-#
-# ggplot(data = dem$res_dydx, aes(x=x)) +
-#   geom_ribbon(aes(ymin = lb, ymax = ub), fill = "blue", alpha = 0.2) +
-#   geom_line(aes(y = dydx)) +
-#   theme_minimal()
+ggplot(data = dem$res_pred, aes(x=x)) +
+  geom_ribbon(aes(ymin = lb, ymax = ub), fill = "blue", alpha = 0.2) +
+  geom_line(aes(y = y_pred)) +
+  theme_minimal() +
+  geom_vline(aes(xintercept = dem$vertex$mean), linetype = "dotted")
+
+ggplot(data = dem$res_dydx, aes(x=x)) +
+  geom_ribbon(aes(ymin = lb, ymax = ub), fill = "blue", alpha = 0.2) +
+  geom_line(aes(y = dydx)) +
+  theme_minimal()
 # ----------------------------------- #
 
 
@@ -277,14 +284,14 @@ lrss_chn <- lrss(b_dvl     = b_chn[dvl_chn],
 
 # Long-run-steady-state response of Chinese DAH to 1% contemporaneous increase
 # in US DAH in the same year
-lrss_chn$lrss
+lrss_chn$lrss %>% round(., 3)
 
 # Temporary shocks eventually fade to 0; permanent shocks eventually accumulate
 # to the LRSS response. So how long this eventually?
 # Most common: time until 90% has faded/accumulated:
 # Calculate the 90% life of effect: i.e., time until 90% of the effect of a
 # shock fades away:
-lrss_chn$half_life
+lrss_chn$half_life %>% round(., 3)
 # ----------------------------------- #
 
 
@@ -316,14 +323,14 @@ lrss_usa <- lrss(b_dvl     = b_usa[dvl_usa],
 
 # Long-run-steady-state response of Chinese DAH to 1% contemporaneous increase
 # in US DAH in the same year
-lrss_usa$lrss
+lrss_usa$lrss %>% round(., 3)
 
 # Temporary shocks eventually fade to 0; permanent shocks eventually accumulate
 # to the LRSS response. So how long this eventually?
 # Most common: time until 90% has faded/accumulated:
 # Calculate the 90% life of effect: i.e., time until 90% of the effect of a
 # shock fades away:
-lrss_usa$half_life
+lrss_usa$half_life %>% round(., 3)
 # ----------------------------------- #
 
 
@@ -355,21 +362,23 @@ plt_main <- ggplot(data = plt_data, aes(x = time)) +
     legend.position    = "bottom",
     legend.direction   = "horizontal",
     legend.margin      = margin(-3, 0, 0, 1, "mm"),
-    legend.text        = element_text(size = 12/.pt),
-    axis.text          = element_text(size = 12/.pt),
-    axis.title         = element_text(size = 14/.pt),
-    plot.title         = element_text(size = 16/.pt),
-    plot.subtitle      = element_text(size = 14/.pt),
-    plot.caption       = element_text(size = 12/.pt),
-    strip.text         = element_text(size = 14/.pt)
+    legend.text        = element_text(size = 16/.pt),
+    axis.text          = element_text(size = 16/.pt),
+    axis.title         = element_text(size = 18/.pt),
+    # plot.title         = element_text(size = 20/.pt),
+    plot.title         = element_blank(),
+    # plot.subtitle      = element_text(size = 18/.pt),
+    plot.subtitle      = element_blank(),
+    plot.caption       = element_text(size = 16/.pt),
+    strip.text         = element_text(size = 18/.pt)
   ) +
 
-  labs(title    = "Great Power: Health aid responsiveness",
-       y        = "Health aid allocation change (%)",
-       subtitle = "Ten year predicted response to 1% increase in allocations of the other power",
+  labs(y        = "Health aid allocation change (%)",
+       # title    = "Great Power: Health aid responsiveness",
+       # subtitle = "Ten year predicted response to 1% increase in allocations of the other power",
        caption  = "Based on estimates of full model with controls.\nConfidence intervals computed with parametric simulation.")
 
-plt_main
+# plt_main
 
 ggsave(plot     = plt_main,
        filename = "Results/Figures/APSA-2021_DAH-Response.png",
@@ -422,6 +431,13 @@ lapply(tmp, function(x){
   coeftest(bgtest(x, order = 1, fill = NA)) %>% tail(n = 1)
 })
 # All - yes
+
+# Augmented Dicky Fueller - integrated series test
+lapply(tmp, function(x){
+  ur.df(x$model[,1], type = "none", lags = 1) %>%
+    summary
+  })
+
 # ----------------------------------- #
 
 
@@ -461,6 +477,7 @@ screenreg(health_mods,
           omit.coef        = c("cregion|cname|year"),
           override.se      = ses,
           override.pvalues = pvl,
+          ci.force = T,
           custom.gof.rows  = list("Region FE" = rep("Yes", 4),
                                   "Year FE"   = rep("Yes", 4)),
           custom.note      = paste0("%stars\n",
@@ -522,15 +539,18 @@ lrss <- function(model, dvl, iv, vcv, sims = 1e3){
   res <- b_sims %>%
     as.data.frame %>%
 
+    mutate(across(.cols = everything(),
+                  .fns  = function(b){(exp(b) - 1) * 100})) %>%
+
     mutate(lrss = !!sym(iv) / (1 - !!sym(dvl))) %>%
     summarize(lrss_lb   = mean(lrss) - 1.96 * sd(lrss),
               lrss_mean = mean(lrss),
               lrss_ub   = mean(lrss) + 1.96 * sd(lrss))
-  res <- lapply(res, function(b){(exp(b) - 1) * 100})
+  # res <- lapply(res, function(b){(exp(b) - 1) * 100})
   return(res)
 }
 
-health_effects <- sapply(dvs, function(dv){
+health_effects_us <- lapply(dvs, function(dv){
   dvl <- paste0(dv, "_lag")
   iv  <- "dah_per_usa"
 
@@ -538,7 +558,30 @@ health_effects <- sapply(dvs, function(dv){
   v <- vcv[[dv]][c(dvl, iv), c(dvl, iv)]
   r <- lrss(model = m, dvl = dvl, iv = iv, vcv = v)
   return(r)
-})
+}) %>%
+  bind_rows() %>%
+  mutate(across(everything(), ~round(.x, 3))) %>%
+  mutate(ID = dvs) %>%
+  dplyr::select(ID, everything())
+
+
+health_effects_cn <- lapply(dvs, function(dv){
+  dvl <- paste0(dv, "_lag")
+  iv  <- "dah_per_chn"
+
+  m <- health_mods[[dv]]
+  v <- vcv[[dv]][c(dvl, iv), c(dvl, iv)]
+  r <- lrss(model = m, dvl = dvl, iv = iv, vcv = v)
+  return(r)
+}) %>%
+  bind_rows() %>%
+  mutate(across(everything(), ~round(.x, 3))) %>%
+  mutate(ID = dvs) %>%
+  dplyr::select(ID, everything())
+
+cat("\14")
+health_effects_us
+health_effects_cn
 # ----------------------------------- #
 #-----------------------------------------------------------------------------#
 
