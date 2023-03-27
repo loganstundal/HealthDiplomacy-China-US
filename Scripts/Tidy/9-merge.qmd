@@ -1,0 +1,92 @@
+---
+title : "Tidy -  Merge data"
+editor: visual
+date  : "March 6, 2023"
+---
+
+### Purpose
+
+To merge all separate tidied data objects:
+
+-   0-panel.qmd
+-   1-health_us_usaid
+-   2-health_cn_aiddata
+-   3-health_dah
+-   4-controls
+-   5-controls_distance
+-   6-controls_emdat
+
+### Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+sapply(list.files(path = "../../Data/tidy-data", pattern = ".rds"), function(x){
+  xn <- x %>% str_remove(., "[0-9]{1}-") %>% str_remove(., ".rds")
+  xf <- sprintf("../../Data/tidy-data/%s", x)
+  assign(x = xn, 
+         value = read_rds(file = xf),
+         envir = .GlobalEnv)
+})
+sort_cols <- function(data){
+  return(data %>% select(any_of(c("cname", "ccode", "year")), sort(colnames(data))))
+}
+# ----------------------------------- #
+```
+
+### Join all to panel
+
+```{r}
+# sapply(ls(), function(x){names(get(x))})
+```
+
+```{r}
+# cname"      "ccode"      "year"       "carea_sqkm" "region"     "geometry"  
+res <- c(list(panel = panel), sapply(ls()[!str_detect(ls(), "panel|sort_cols")], get)) 
+
+res <- lapply(res, function(x){
+  return(x <- x %>% mutate(across(.cols = c(ccode, year),
+                                  .fns  = ~as.character(.x))))
+})
+
+res <- res %>% purrr::reduce(., left_join, by = c("ccode", "year")) %>% 
+  select(cname, ccode, year, carea_sqkm, cdist_us, cdist_cn, region, 
+         sort(names(.))) %>% 
+  
+  # Most series begin in 2000
+  filter(year >= 2000) %>% 
+  
+  # Drop US and China
+  filter(!ccode %in% c(2, 710))
+```
+
+Check missingness:
+
+```{r}
+# lapply(res, function(x){table(is.na(x))})
+```
+
+### Save
+
+```{r}
+write_rds(x    = res, 
+          file = sprintf("../../Data/tidy-data/9-hd-%s.rds", today() %>% str_remove_all(., "-")))
+
+rm(list = ls())
+```

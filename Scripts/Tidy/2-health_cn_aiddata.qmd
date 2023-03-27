@@ -1,0 +1,204 @@
+---
+title : "Tidy - CN Military health data - aiddata"
+editor: visual
+date  : "March 3, 2023" 
+---
+
+### Purpose
+
+-   Based upon `tidy-health_chn_v2.0.R`, originally from November 15, 2021.
+
+To tidy AidData's Chinese military health activity data coding. Note: Chinese Health Aid data source: Aid Data GCDF V2.0
+
+To tidy all health aid from Aid Data GCDF V2.
+
+### Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(countrycode)
+library(readxl)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+panel <- read_rds("../../Data/tidy-data/0-panel.rds")
+mil   <- read_csv("../../Data/source-data/Health-Aid_China/AidData-gcdf2-tidy_urls-coded.csv")
+full  <- read_xlsx("../../Data/source-data/Health-Aid_China/AidData-gcdf2.xlsx", 
+                   sheet = "Global_CDF2.0")
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Functions
+# ----------------------------------- #
+sort_cols <- function(data, tidy_id = TRUE){
+  if(tidy_id){
+    data <- data %>% mutate(across(.cols = c(ccode, year), 
+                                   .fns  = ~as.character(.x)))
+  }
+  data <- data %>% select(any_of(c("cname", "ccode", "year")), sort(colnames(data)))
+  return(data)
+}
+# ----------------------------------- #
+```
+
+## Tidy Military
+
+Military data `mil` is in story-id format. Need: only one observation per aid event which also contains amount estimates (if one exists). Note also dropping Water supply and sanitation here for better comparison with US health aid data.
+
+```{r}
+mil <- mil %>% 
+  filter(is.na(Drop), 
+         sector_name != "WATER SUPPLY AND SANITATION") %>% 
+  select(id, recipient, commitment_year, 
+         ends_with("_agencies"),
+         amount_constant_usd2017,
+         sector_name, 
+         military_coding) %>% 
+  group_by(id) %>% 
+  arrange(desc(amount_constant_usd2017)) %>% 
+  slice(1) %>% 
+  ungroup
+```
+
+## Tidy Full CDF2.0
+
+### Subset
+
+Subsetting for health related activities. Also quick-coding additional plausible military health cases not contained in `mil` by using string identification.
+
+```{r}
+# Health sector targets
+tgts <- c(
+  "EMERGENCY RESPONSE",
+  "HEALTH",
+  # "OTHER SOCIAL INFRASTRUCTURE AND SERVICES",
+  "POPULATION POLICIES/PROGRAMMES AND REPRODUCTIVE HEALTH"
+)
+
+full <- full %>% 
+  janitor::clean_names() %>% 
+  filter(recommended_for_aggregates == "Yes",
+       sector_name %in% tgts) %>%
+  rename(id = aid_data_tuff_project_id) %>% 
+  
+  mutate(across(.cols = ends_with("_agencies"),
+                .fns  = ~str_to_lower(.x))) %>%
+  mutate(military_coding = case_when(
+    (str_detect(funding_agencies, "milit|army|navy|force|defen") |
+     str_detect(receiving_agencies, "milit|army|navy|force|defen") |
+     str_detect(implementing_agencies, "milit|army|navy|force|defen")) ~ "Military",
+    TRUE ~ "Not military"
+  )) %>% 
+  select(any_of(names(mil)), military_coding) 
+```
+
+Combine `mil` and `full` into one dataframe while giving `mil` military health coding priority.
+
+```{r}
+full <- full %>% 
+  # Drop ids corrseponding to events coded in mil
+  filter(!(id %in% mil$id)) %>%
+  bind_rows(., mil) %>% 
+  mutate(military_coding = case_when(
+    military_coding %in% c("Military", "Plausible military") ~ "mil",
+    TRUE ~ "nonmil"
+  ))
+
+rm(mil, tgts)
+```
+
+### Create ids, summarize, and pivot
+
+```{r}
+#| warning: false
+
+# country codes
+full <- full %>% 
+  rename(year = commitment_year,
+         amount = amount_constant_usd2017) %>% 
+  mutate(ccode = countrycode(recipient, "country.name", "cown",
+                             custom_match = c("Serbia" = 345))) %>% 
+  drop_na(ccode)
+
+# summarize: project counts and dollar amounts
+full <- full %>% 
+  group_by(ccode, year, military_coding) %>% 
+  summarize(projects = n(),
+            amount   = sum(amount, na.rm = TRUE),
+            .groups  = "keep") %>% 
+  ungroup 
+
+# pivot wider
+full <- full %>% 
+  pivot_wider(data = ., 
+              id_cols = c(ccode, year),
+              names_from = military_coding, 
+              values_from = c(projects, amount)) 
+```
+
+### Join to panel
+
+```{r}
+# Subset panel to only include years in AidData - fine to do here
+panel <- panel %>% filter(year >= min(full$year), year <= max(full$year))
+
+full <- panel %>% 
+  st_drop_geometry %>% 
+  select(ccode, year) %>% 
+  left_join(., full, by = c("ccode", "year")) 
+```
+
+### Missing values
+
+Dealing with zeros, true-zeros, and missing values:
+
+-   0s in the resulting amount\_ variables are an artifact of sum() and should be coded as NA.
+-   NAs are observations with no reporeted values in AidData and can therefore plausibly be coded as 0.
+
+```{r}
+full <- full %>%
+  
+  mutate(across(.cols = starts_with("amount_"), 
+                .fns  = ~case_when(
+                  .x == 0 ~ NA,
+                  is.na(.x) ~ 0, 
+                  TRUE ~ .x
+                ))) %>% 
+  mutate(across(.cols = starts_with("projects_"), 
+                .fns  = ~replace_na(.x, 0))) %>% 
+  
+  rename_with(.cols = !c(ccode, year), 
+              .fn   = ~paste("aiddata", .x, sep = "_"))
+```
+
+### Total health
+
+```{r}
+full <- full %>% 
+    mutate(aiddata_projects = aiddata_projects_mil + aiddata_projects_nonmil, 
+           aiddata_amount   = aiddata_amount_mil   + aiddata_amount_nonmil) %>% 
+  sort_cols
+```
+
+### Save
+
+```{r}
+write_rds(x    = full, 
+          file = "../../Data/tidy-data/2-cn_aiddata.rds")
+
+rm(list = ls())
+```

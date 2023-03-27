@@ -1,0 +1,203 @@
+---
+title : "Tidy -  Control variable - emdat"
+editor: visual
+date  : "March 1, 2023"
+---
+
+### Purpose
+
+To tidy data from EM-Dat - The International Disasters Database ([source](https://www.emdat.be/)).
+
+Goal - to create a data frame containing various categorizations of disaster counts and estimated deaths at the county-year level.
+
+### Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(readxl)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+panel <- read_rds("../../Data/tidy-data/0-panel.rds")
+d <- read_xlsx("../../Data/source-data/Controls/emdat/emdat_public_2023_02_27_query_uid-hUeayJ.xlsx")
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Functions
+# ----------------------------------- #
+sort_cols <- function(data, tidy_id = TRUE){
+  if(tidy_id){
+    data <- data %>% mutate(across(.cols = c(ccode, year), 
+                                   .fns  = ~as.character(.x)))
+  }
+  data <- data %>% select(any_of(c("cname", "ccode", "year")), sort(colnames(data)))
+  return(data)
+}
+# ----------------------------------- #
+```
+
+### Select initial variables
+
+Note - this subset was determined by optimizing for variables with minimum missing values in the data (commented variables had too many missing observations).
+
+Goal -- want to interact disaster type count with estimated fatalities. H: militaries most likely to respond to high-fatality disasters but only of certain types.
+
+```{r}
+d <- d %>%
+  janitor::clean_names() %>%
+  select(
+    country,
+    iso,
+    year,
+    disaster_group,
+    disaster_subgroup,
+    disaster_type,
+    total_deaths
+    
+   # total_affected
+   # dis_mag_scale,
+   # dis_mag_value,
+   # dis_no,
+   # starts_with("start_"),
+   # starts_with("end_"),
+   # starts_with("disaster_"),
+   # disaster_subtype,
+   # no_injured,
+   # no_affected
+   # no_homeless,
+   # ofda_response,
+   # appeal,
+   # declaration,
+   # aid_contribution_000_us,
+   # total_damages_000_us,
+   # total_damages_adjusted_000_us
+   )
+
+# f <- function(x){
+#   z <- sum(is.na(x)) / length(x)
+#   z <- round(z * 100, 2)
+#  return(sprintf("Missing: %s", z))
+# }
+
+# Going to use total deaths as a measure of magnitude since dollars (damages
+# and aid) have so many missing values and since disasters of different
+# types have different scales (which also has many missing values).
+# lapply(d, f)
+
+d <- d %>%
+  drop_na(total_deaths)
+#  select(country:disaster_type, total_deaths)
+```
+
+### Summarize data
+
+1.  calculate total number of disasters and estimated death by category per country-year.
+2.  pivot-wide: from country-year-disaster_category format to country-year format
+3.  calculate total disaster (count and death) statistics per country-year
+
+#### 1. Calculate country-year-disaster_category estimates
+
+```{r}
+#| warning: false
+
+d <- d %>%
+  group_by(country, year, disaster_type, disaster_group, disaster_subgroup) %>%
+  summarize(
+    disasters= n(),
+    deaths   = sum(total_deaths),
+    .groups  = "keep") %>%
+  ungroup
+
+x <- tibble(
+  "country" = sort(unique(d$country)),
+  "ccode"   = countrycode(country, "country.name", "cown",
+                          custom_match = c("Serbia"            = 341,
+                                           "Montenegro"        = 345,
+                                           "Serbia Montenegro" = 345))
+) %>%
+  drop_na(ccode)
+
+d <- d %>% left_join(., x, by = "country") %>%
+  select(country, ccode, year,
+         disaster_group, disaster_subgroup, disaster_type, disasters, deaths) %>%
+  arrange(country, year, disaster_group, disaster_subgroup) %>%
+  drop_na(ccode)
+
+rm(x)
+```
+
+#### 2. Pivot-wide to country-year format
+
+```{r}
+d <- d %>%
+  mutate(disaster_classification = paste(disaster_group, disaster_subgroup, disaster_type,
+                                         sep = "_")) %>%
+  pivot_wider(
+    data        = .,
+    id_cols     = c(ccode, year),
+    names_from  = disaster_classification,
+    values_from = c(disasters, deaths),
+    values_fill = 0
+  )
+```
+
+#### 3. Calculate total disaster estimates per country-year
+
+```{r}
+d <- d %>%
+  rowwise() %>%
+  mutate(
+    disasters_natural_total       = sum(c_across(starts_with("disasters_Natural"))),
+    disasters_technological_total = sum(c_across(starts_with("disasters_Technological"))),
+
+    deaths_natural_total          = sum(c_across(starts_with("deaths_Natural"))),
+    deaths_technological_total    = sum(c_across(starts_with("deaths_Technological"))),
+  ) %>%
+  mutate(
+    disasters_total               = disasters_natural_total + disasters_technological_total,
+    deaths_total                  = deaths_natural_total + deaths_technological_total
+  ) %>%
+  ungroup %>%
+  janitor::clean_names()
+
+d <- d %>% 
+  rename_with(.cols = !c(ccode, year),
+              .fn   = ~paste0("emdat_", .x)) %>% 
+  sort_cols(tidy_id = TRUE)
+```
+
+### Merge to panel
+
+```{r}
+panel <- panel %>% select(ccode, year) %>% st_drop_geometry() %>% 
+  filter(year >= min(d$year), year <= max(d$year)) %>% 
+  sort_cols()
+
+d <- d %>% 
+  left_join(panel, ., by = c("ccode", "year")) %>% 
+  mutate(across(.cols = !c(ccode, year), 
+                .fns  = ~replace_na(.x, 0)))
+```
+
+### Save
+
+```{r}
+write_rds(x    = d, 
+          file = "../../Data/tidy-data/6-controls_emdat.rds")
+
+rm(list = ls())
+```

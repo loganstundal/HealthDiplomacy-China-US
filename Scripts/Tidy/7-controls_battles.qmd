@@ -1,0 +1,118 @@
+---
+title : "Tidy -  Control variable - conflict"
+editor: visual
+date  : "March 7, 2023"
+---
+
+### Purpose
+
+Calculate conflict deaths per year. Will ultimately use a 1000 brd cutoff.
+
+### Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(cshapes)
+# library(countrycode)
+# library(lubridate)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+load("~/Nextcloud/Work/Data/Conflict/UCDP/GED_v211.RData")
+d <- GEDEvent_v21_1;rm(GEDEvent_v21_1)
+
+pnl <- read_rds("../../Data/tidy-data/0-panel.rds")
+# ----------------------------------- #
+```
+
+### Summarize conflict
+
+Aggregate deaths per year
+
+```{r}
+d <- d %>% 
+  filter(year >= 2000,
+         where_prec != 7) %>% 
+  mutate(deaths_battle = deaths_a + deaths_b) %>% 
+  rename(deaths_best = best) %>% 
+  select(year, latitude, longitude, 
+         deaths_civilians, deaths_best, deaths_battle) %>% 
+  st_as_sf(., coords = c("longitude", "latitude")) %>% 
+  st_set_crs(., value = st_crs("+proj=longlat +datum=WGS84")) %>% 
+  st_transform(., st_crs("+proj=robin"))
+
+
+fx <- function(yr){
+
+  cat(sprintf("\14Working on year: %s", yr))
+  
+  tmp <- d %>% filter(year == yr) %>% select(-year)
+
+  yr_shp <- ifelse(yr == 2020, 2019, yr)
+  
+  mp <- cshp(date  = as.Date(sprintf("%s-12-31", yr_shp)), 
+             useGW = FALSE) %>% 
+    mutate(year = yr, ccode = cowcode) %>% 
+    select(ccode, year) %>% 
+    rmapshaper::ms_simplify(., keep = 0.05, keep_shapes = TRUE) %>% 
+    st_make_valid(.) %>% 
+    st_buffer(., 1e3) %>% 
+    st_transform(., st_crs(tmp))
+  
+  res <- st_join(tmp, mp) 
+  
+  res <- res %>% 
+    st_drop_geometry %>% 
+    mutate(across(.cols = starts_with("deaths"),
+                  .fns  = ~replace_na(.x, 0))) %>% 
+    group_by(ccode) %>% 
+    summarize(across(.cols = starts_with("deaths"), 
+                     .fns  = sum)) %>% 
+    ungroup %>% 
+    mutate(year = yr)
+  
+  return(res)
+}
+```
+
+```{r}
+res <- lapply(sort(unique(d$year)), fx) %>% bind_rows()
+```
+
+### Join to panel
+
+```{r}
+res <- pnl %>% 
+  st_drop_geometry %>% 
+  select(ccode, year) %>% 
+  left_join(., res, by = c("ccode", "year")) %>% 
+  mutate(across(.cols = starts_with("deaths"), 
+                .fns  = ~replace_na(.x, 0)))
+
+res <- res %>% 
+  rename_with(.cols = starts_with("death"),
+              .fn   = ~paste0("ged_", .x))
+```
+
+### Save
+
+```{r}
+write_rds(x    = res, 
+          file = "../../Data/tidy-data/7-controls_battles.rds")
+
+rm(list = ls())
+```

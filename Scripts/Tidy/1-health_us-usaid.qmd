@@ -1,0 +1,222 @@
+---
+title : "Tidy - US Military health data - usaid"
+editor: visual
+date  : "March 1, 2023" 
+---
+
+### Purpose
+
+-   Based upon `tidy-health_usa_v2.0.R` , originally from April 5, 2022.
+
+Goal - to tidy USAID's Foreign Aid Complete data by identifying US health expenditures originating from the US military (Department of Defense) or those projects implemented by the US military.
+
+### Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(countrycode)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+panel <- read_rds("../../Data/tidy-data/0-panel.rds")
+usa   <- read_csv("../../Data/source-data/Health-Aid_US/us_foreign_aid_complete.csv")
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Globals
+# ----------------------------------- #
+yrmin <- min(panel$year)
+yrmax <- max(panel$year)
+# ----------------------------------- #
+```
+
+### Subset
+
+##### Note
+
+Below I remove events associated with water infrastructure development for comparability to the China coding. Additionally, although China does not appear to have a large HIV control program comparable to PEPFAR, I retain HIV/AIDS projects in the data for two reasons.
+
+1.  HIV/AIDS control clearly relates to health
+2.  DOD is a major partner for IMPLEMENTING HIV control programs.
+
+As a result of point 2 above, I therefore code as Military health below those projects which are either funded by DOD or which are implemented by DOD. Note that implementation is the larger category of US military health.
+
+```{r}
+#| warning: false
+
+mil_agencies <- c("ARMY","DOD","NAVY")
+
+usa <- usa %>%
+  mutate(year   = as.numeric(fiscal_year)) %>%
+  rename(amount = constant_amount,
+         cname  = country_name,
+         id     = activity_id,
+         # funder = funding_agency_acronym
+         ) %>%
+  filter(
+    year %in% yrmin:yrmax,
+    amount >= 0,
+    # dac_sector_name       == "Basic Health",
+    dac_category_name     == "Health and Population",
+    # dac_sector_name       != "HIV/AIDS",
+    transaction_type_name == "Disbursements",
+    !dac_purpose_name %in% c(
+      "Basic drinking water supply and basic sanitation",
+      "Basic drinking water supply",  
+      "Basic sanitation",
+      "Education and training in water supply and sanitation",
+      "River basins' development",
+      "Sanitation - large systems",
+      "Waste management / disposal",
+      "Water resources conservation (including data collection)",
+      "Water sector policy and administrative management",
+      "Water supply - large systems",
+      "Water supply and sanitation - large systems"
+    )
+  ) %>%
+  mutate(military = case_when(funding_agency_acronym      %in% mil_agencies ~ "mil",
+                              implementing_agency_acronym %in% mil_agencies ~ "mil",
+                              TRUE ~ "nonmil")) %>% 
+  select(cname, year, 
+       id,
+       amount, 
+       # funder, 
+       # dac_category_name,
+       dac_sector_name, dac_purpose_name,
+       military)
+
+x <- tibble(
+  cname = sort(unique(usa$cname)),
+  ccode = countrycode(cname, "country.name", "cown",
+                      custom_match = c("Serbia" = 345, 
+                                       "Serbia and Montenegro (former)" = 345))) %>%
+  drop_na(ccode)
+
+usa <- left_join(usa, x, by = "cname") %>% drop_na(ccode)
+rm(x, mil_agencies, yrmin, yrmax)
+```
+
+```{r}
+# x <- table(usa$year, usa$military) %>%
+#   as.data.frame  
+#   # pivot_wider(., id_cols = Var1, names_from = Var2, values_from = Freq) %>%
+#   # as_tibble %>%
+# 
+# ggplot(data = x %>% mutate(year = as.numeric(as.character(Var1)))) +
+#   geom_line(aes(x = year, y = Freq, color = Var2)) +
+#   facet_wrap(~Var2, ncol = 2, scales = "free")
+```
+
+```{r}
+# usa %>% filter(year == 2011) %>% group_by( military) %>% summarize(total = sum(amount) /1e6) 
+```
+
+```{r}
+ # usa %>% 
+ #   filter(year == 2011) %>%
+ #   group_by(dac_sector_name, military) %>% 
+ #   summarize(total = sum(amount) /1e6, 
+ #             .groups = "keep") %>% 
+ #   pivot_wider(., id_cols = dac_sector_name, names_from = military, values_from = total) %>% 
+ #   mutate(mil = replace_na(mil, 0))
+```
+
+```{r}
+# usa %>% 
+#   filter(year == 2011) %>% 
+#   group_by(dac_purpose_name, military) %>% 
+#   summarize(total = sum(amount) /1e6,
+#             .groups = "keep") %>% 
+#   pivot_wider(., id_cols = dac_purpose_name, names_from = military, values_from = total) %>% 
+#   mutate(mil = replace_na(mil, 0))
+```
+
+### Summarize
+
+#### Create classes of medical activity
+
+```{r}
+usa <- usa %>% 
+  mutate(dac_purpose_name = str_trim(dac_purpose_name)) %>% 
+  mutate(class = case_when(
+    dac_purpose_name == "Basic health infrastructure" ~ "health_infrastructure",
+    dac_purpose_name %in% c("Basic health care",
+                            "Basic nutrition",
+                            "Family planning",
+                            "Health education",
+                            "Health personnel development",
+                            "Health policy and administrative management",
+                            "Medical education/training",
+                            "Medical research",
+                            "Medical services",
+                            "Other prevention and treatment of NCDs",
+                            "Population policy and administrative management",
+                            "Promotion of mental health and well-being",
+                            "Reproductive health care") ~ "health_basic",
+    dac_purpose_name %in% c("Infectious disease control",
+                            "Malaria control",
+                            "STD control including HIV/AIDS",
+                            "Tuberculosis control") ~ "health_infectious",
+    TRUE ~ "CHECK ME"
+  ))
+```
+
+```{r}
+usa <- usa %>% 
+  group_by(ccode, year, military, class) %>% 
+  summarize(projects = n(),
+            amount   = sum(amount),
+            .groups  = "keep") %>% 
+  ungroup %>% 
+  pivot_wider(id_cols = c(ccode, year),
+              names_from = c(military, class),
+              values_from = c(projects, amount)) %>% 
+  mutate(across(.cols = !c(ccode, year),
+                .fns  = ~replace_na(.x, 0))) %>% 
+  rowwise() %>% 
+  mutate(projects_mil    = sum(c_across(starts_with("projects_mil"))),
+         projects_nonmil = sum(c_across(starts_with("projects_nonmil"))),
+         
+         amount_mil      = sum(c_across(starts_with("amount_mil"))),
+         amount_nonmil   = sum(c_across(starts_with("amount_nonmil"))),
+         ) %>% 
+  rename_with(.cols = !c(ccode, year),
+              .fn   = ~paste0("usaid_", .x)) %>% 
+  mutate(usaid_projects = usaid_projects_mil + usaid_projects_nonmil, 
+         usaid_amount   = usaid_amount_mil   + usaid_amount_nonmil)
+```
+
+### Merge to panel
+
+```{r}
+usa <- panel %>% 
+  select(ccode, year) %>% 
+  st_drop_geometry() %>% 
+  left_join(., usa, by = c("ccode", "year")) %>% 
+  mutate(across(.cols = starts_with("usaid"),
+                .fns  = ~replace_na(.x, 0))) %>% 
+  as_tibble %>% 
+  
+  select(ccode, year, sort(names(.)))
+```
+
+### Save
+
+```{r}
+write_rds(x    = usa,
+          file = "../../Data/tidy-data/1-us_usaid.rds")
+```

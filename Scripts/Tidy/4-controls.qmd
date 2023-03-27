@@ -1,0 +1,453 @@
+---
+title : "Tidy - Control variables"
+editor: visual
+date  : "March 5, 2023" 
+---
+
+## Purpose
+
+-   Based loosely upon `tidy-controls.R`, originally from November 18, 2021.
+
+To tidy control variables as follows:
+
+1.  Geographic distance
+2.  United Nations variables - GDP, GDP PC, population, demographic health variables, disease health variables, alliance status.
+
+## Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(countrycode)
+library(readxl)
+# library(lubridate)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+panel <- read_rds("../../Data/tidy-data/0-panel.rds")
+
+gdp   <- read_xlsx("../../Data/source-data/Controls/un_stats-gdp.xlsx")
+gdppc <- read_xlsx("../../Data/source-data/Controls/un_stats-gdp_pc.xlsx")
+pop   <- read_csv("../../Data/source-data/Controls/un_stats-pop_thousands.csv")
+dem   <- read_csv("../../Data/source-data/Controls/un_stats-demographics.csv")
+ghdx  <- read_csv("../../Data/source-data/Controls/GHD-Disease/GBD_2019.csv")
+ally  <- read_csv("../../Data/source-data/Controls/ATOP 5_0/atop5_0ddyr.csv")
+trade <- read_rds("~/Nextcloud/Work/Writing/Papers/disease-trade-migration/Data/Source-data/cepii_gravity/gravity_v202102.Rds")
+vdem  <- vdemdata::vdem
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Functions
+# ----------------------------------- #
+gen_cc <- function(data, cid = "recipient_country"){
+    data <- data %>%
+      mutate(ccode = suppressWarnings({countrycode(!!sym(cid), "country.name", "cown",
+                                                   custom_match = c("Serbia" = 345))}))
+  return(data)
+}
+
+sort_cols <- function(data){
+  return(data %>% select(any_of(c("cname", "ccode", "year")), sort(colnames(data))))
+}
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Global variables
+# ----------------------------------- #
+yr_min <- 2000
+yr_max <- 2019
+# ----------------------------------- #
+```
+
+## Tidy controls
+
+```{r}
+# To store tidied results for easy join at end
+panel <- panel %>% 
+  select(ccode, year) %>% 
+  filter(year %in% yr_min:yr_max) %>% 
+  st_drop_geometry
+
+tidy <- list()
+
+tidy[["panel"]] <- panel
+
+rm(panel)
+```
+
+### UN - GDP (and PC)
+
+(Source: UN Stats)
+
+```{r}
+# GDP
+gdp <- gdp %>%
+  select(-CountryID) %>%
+  filter(IndicatorName %in% c("Exports of goods and services",
+                              "Imports of goods and services",
+                              "Gross Domestic Product (GDP)")) %>%
+  pivot_longer(.,
+               cols      = !c(Country, IndicatorName),
+               names_to  = "year",
+               values_to = "val") %>%
+  drop_na(val) %>%
+  filter(year %in% yr_min:yr_max,
+         !(year <= 2010 & Country %in% c("Sudan", "South Sudan"))) %>%
+  mutate(Country = case_when(Country %in% c("Sudan", "South Sudan") & year == 2011 ~ "Sudan",
+                             Country == "Sudan (Former)" ~ "Sudan",
+                             TRUE ~ Country),
+
+         IndicatorName = case_when(IndicatorName == "Exports of goods and services" ~ "exports",
+                                   IndicatorName == "Imports of goods and services" ~ "imports",
+                                   IndicatorName == "Gross Domestic Product (GDP)"  ~ "gdp")) %>%
+
+  # Resolve Sudan duplicates issue
+  group_by(Country, year, IndicatorName) %>%
+  summarize(val = mean(val), .groups = "keep") %>%
+  ungroup %>%
+
+  pivot_wider(.,
+              id_cols     = c(Country, year),
+              names_from  = IndicatorName,
+              values_from = val) %>%
+
+  gen_cc(., "Country") %>%
+  select(ccode, everything(), -Country) %>%
+  drop_na(ccode) %>%
+  mutate(
+    # across(.cols  = !c(ccode, year),
+    #        .fns   = ~log(.x),
+    #        .names = "{.col}_ln"),
+    year   = as.numeric(year)) %>%
+  rename_with(.cols = !c(ccode, year),
+              .fn  = ~paste0("un_", .x)) %>% 
+  sort_cols
+
+# GDP Per capita
+gdppc <- gdppc %>%
+  select(-CountryID) %>%
+  pivot_longer(.,
+               cols      = !Country,
+               names_to  = "year",
+               values_to = "gdppc") %>%
+  drop_na(gdppc) %>%
+
+  filter(year %in% yr_min:yr_max,
+         !(year <= 2010 & Country %in% c("Sudan", "South Sudan"))) %>%
+  mutate(Country = case_when(Country %in% c("Sudan", "South Sudan") & year == 2011 ~ "Sudan",
+                             Country == "Sudan (Former)" ~ "Sudan",
+                             TRUE ~ Country)) %>%
+
+  # Resolve Sudan duplicates issue
+  group_by(Country, year) %>%
+  summarize(gdppc = mean(gdppc), .groups = "keep") %>%
+  ungroup %>%
+
+  gen_cc(., cid = "Country") %>%
+  select(ccode, everything(), -Country) %>%
+  drop_na(ccode) %>%
+  mutate(
+    # gdppc_ln = log(gdppc),
+    year     = as.numeric(year)) %>%
+  rename_with(.cols = !c(ccode, year),
+              .fn  = ~paste0("un_", .x)) %>% 
+  sort_cols
+
+tidy[["gdp"]]   <- gdp
+tidy[["gdppc"]] <- gdppc
+
+rm(gdp, gdppc)
+```
+
+### UN - Population
+
+(Source: UN Stats)
+
+```{r}
+pop <- pop %>%
+  gen_cc(., "country") %>%
+  drop_na(ccode) %>%
+  select(ccode, everything(), -country) %>%
+  pivot_longer(.,
+               cols      = !ccode,
+               names_to  = "year",
+               values_to = "pop") %>%
+  filter(year %in% yr_min:yr_max) %>%
+  mutate(pop    = pop * 1e3,
+         year   = as.numeric(year)) %>%
+  # mutate(pop_ln = log(pop)) %>%
+  select(ccode, year, everything()) %>% 
+  rename_with(.cols = !c(ccode, year),
+            .fn  = ~paste0("un_", .x)) %>% 
+  sort_cols
+
+tidy[["pop"]] <- pop
+
+rm(pop)
+```
+
+### UN - Demographic health
+
+(Source: UN Stats)
+
+```{r}
+dem <- dem %>%
+  rename(death_p1000     = `Crude death rate (deaths per 1,000 population)`,
+         lifeexpec_yrs   = `Life expectancy at birth, both sexes combined (years)`,
+         infdeath_p1000  = `Infant mortality rate (infant deaths per 1,000 live births)`,
+         und5death_p1000 = `Under-five mortality (deaths under age 5 per 1,000 live births)`,
+         birth_p1000     = `Crude birth rate (births per 1,000 population)`,
+         fert_p1         = `Total fertility (live births per woman)`,
+         popgrow_p100    = `Population growth rate (percentage)`) %>%
+  filter(year %in% yr_min:yr_max) %>%
+  gen_cc(., "country") %>%
+  drop_na(ccode) %>%
+  select(ccode, year, contains("_")) %>%
+  # mutate(across(.cols = !c(ccode, year, popgrow_p100),
+  #               .fns  = ~ log(.x),
+  #               .names= "{.col}_ln")) %>%
+  select(ccode, year, everything()) %>%
+  rename_with(.cols = !c(ccode, year),
+              .fn  = ~paste0("un_", .x)) %>% 
+  sort_cols
+
+tidy[["dem"]] <- dem
+
+rm(dem)
+```
+
+### GHDX disease
+
+(Source: Global Health Data Exchange)
+
+```{r}
+# Create target variable vectors
+ghdx <- ghdx %>%
+  select(ends_with("name"), year, val) %>% 
+  mutate(
+    cause_name = case_when(
+      str_starts(cause_name, "Comm") ~ "cmd",
+      str_starts(cause_name, "Non-") ~ "ncd",
+      TRUE ~ NA_character_),
+    measure_name = case_when(
+      str_starts(measure_name, "Dea") ~ "death",
+      str_starts(measure_name, "Inc") ~ "incidence",
+      str_starts(measure_name, "Pre") ~ "prevalence",
+      str_starts(measure_name, "DAL") ~ "daly",
+      TRUE ~ NA_character_
+    ),
+    metric_name = case_when(
+      str_starts(metric_name, "Num") ~ "num",
+      # str_starts(metric_name, "Per") ~ "per",
+      # str_starts(metric_name, "Rat") ~ "rate",
+      TRUE ~ NA_character_
+    )
+  ) %>% 
+  drop_na() %>% 
+  rename(cname = location_name)
+
+# Pivot and tidy
+ghdx <- ghdx %>% 
+  select(year, cname, measure_name, cause_name, val) %>% 
+  pivot_wider(data = ., 
+              id_cols     = c(cname, year), 
+              names_from  = ends_with("_name"), 
+              names_glue  = "{cause_name}_{measure_name}",
+              values_from = val) %>% 
+  gen_cc(., "cname") %>%
+  select(-cname) %>% 
+  drop_na(ccode) %>% 
+  rename_with(.cols = !c(ccode, year),
+              .fn  = ~paste0("ghdx_", .x)) %>% 
+  sort_cols
+
+tidy[["ghdx"]] <- ghdx
+
+rm(ghdx)
+```
+
+### Democracy
+
+(Source: V-Dem)
+
+`v2x_polyarchy` - Electoral Democracy Index (D)
+
+To what extent is the ideal of electoral democracy in its fullest sense achieved? In the V-Dem conceptual scheme, electoral democracy is understood as an essential element of any other conception of representative democracy -liberal, participatory, deliberative, egalitarian, or some other.
+
+Scale: Interval, from low to high (0-1)
+
+```{r}
+vdem <- vdem %>%
+  select(country_name, year,
+         v2x_polyarchy,v2x_libdem,v2x_partipdem,v2x_delibdem,v2x_egaldem) %>%
+  filter(year %in% yr_min:yr_max) %>%
+  gen_cc(., "country_name") %>%
+  drop_na(ccode) %>%
+  rowwise() %>%
+  mutate(vdem = mean(c_across(v2x_polyarchy:v2x_egaldem))) %>%
+  select(ccode, year, vdem)
+
+tidy[["vdem"]] <- vdem
+
+rm(vdem)
+```
+
+### Alliance status
+
+(Source: ATOP)
+
+```{r}
+ally <- ally %>%
+  filter(stateA %in% c(2, 710),
+         year   %in% yr_min:yr_max) %>%
+  rename(ccode = stateB) %>%
+  mutate(ally  = case_when(stateA == 2 ~ "us", TRUE ~ "cn")) %>%
+  # select(ccode, year, ally, defense, nonagg) %>%
+  pivot_wider(.,
+              id_cols     = c(ccode, year),
+              names_from  = ally,
+              names_glue  = "{ally}_{.value}",
+              values_from = c(nonagg)) %>% 
+  rename_with(.cols = !c(ccode, year), 
+              .fn   = ~paste0("atop_", .x))
+
+tidy[["ally"]] <- ally
+
+rm(ally)
+```
+
+### Trade - CEPII
+
+```{r}
+#| warning: false
+
+# Function to compute trade flow as average of comtrade and imf sources
+fx <- function(x, zero_na = FALSE){
+  # These zero cases are handled with filter logic below
+  if(all(is.na(x)) & zero_na){
+    return(0)
+  } else{
+    return(mean(x, na.rm = TRUE))
+  }
+}
+
+trade <- trade %>% 
+  filter(year >= yr_min,
+         iso3_o %in% c("CHN", "USA")) %>% 
+  mutate(across(.cols = starts_with("tradeflow"),
+                .fns  = ~.x * 1e3)) %>% 
+  mutate(flow = apply(.[,c("tradeflow_comtrade_d",
+                           "tradeflow_imf_d")], 1, fx, zero_na = TRUE)) %>% 
+  select(iso3_o, iso3_d, year, flow) %>% 
+  pivot_wider(., 
+              id_cols      = c(iso3_d, year), 
+              names_from   = iso3_o, 
+              values_from  = flow, 
+              names_prefix = "trade_") %>% 
+  mutate(ccode = as.integer(countrycode::countrycode(iso3_d, "iso3c", "cown", 
+                                                     custom_match = c("SRB" = 345))), 
+         year  = as.integer(year)) %>% 
+  drop_na(ccode) %>% select(-iso3_d) %>% 
+  janitor::clean_names()
+
+tidy[["trade"]] <- trade
+
+rm(trade, fx)
+```
+
+## Tidy panel
+
+Clean up
+
+```{r}
+rm(yr_min, yr_max, gen_cc)
+```
+
+#### Collapse `tidy` via `left_join`
+
+```{r}
+ctrl <- purrr::reduce(tidy, left_join, by = c("ccode", "year")) 
+# %>% 
+#   mutate(cname = countrycode(ccode, "cown", "country.name")) 
+
+# Drop missing variables on controls
+# ctrl <- ctrl %>% 
+  # Kosovo (2000-2007), Liechtenstein (2000-2019) [all ghdx]
+  # drop_na(ghdx_cmd_daly) %>% 
+  
+  # Andorra, Dominica, Kosovo, Liechtenstein, Marshall Islands,
+  # Monaco, Nauru, Palau, San Marino, St. Kitts & Nevis, Tuvalu
+  # (2000-2019) [all un_dem vars]
+  # drop_na(un_birth_p1000) %>% 
+  
+  # Micronesia, Taiwan, South Sudan (2011)
+  # drop_na(un_gdp) %>% 
+  
+  # Andorra, Antigua & Barbuda, Bahamas, Belize, Brunei, Dominica, 
+  # Grenada, Kiribati, Liechtenstein, Marshall Islands, Micronesia (Federated States of), 
+  # Monaco, Nauru, Palau, Samoa, San Marino, St. Kitts & Nevis, St. Lucia,
+  # St. Vincent & Grenadines, Tonga, Tuvalu
+  # (2000-2019)
+  # Bahrain (2000-2001)
+  # drop_na(vdem)
+
+
+# Non-aggression pact indicator: recode missing values on ally variables as 0 
+ctrl <- ctrl %>% 
+  mutate(across(.cols = starts_with("atop"), 
+                .fn   = ~replace_na(.x, 0)))
+
+# Create non-aggression indicator:
+ctrl <- ctrl %>% 
+    mutate(atop_nonagg = case_when(
+    (atop_us_nonagg == 0 & atop_cn_nonagg == 0) ~ "No pacts",
+    (atop_us_nonagg == 1 & atop_cn_nonagg == 0) ~ "US NonAgg",
+    (atop_us_nonagg == 0 & atop_cn_nonagg == 1) ~ "CN NonAgg",
+    (atop_us_nonagg == 1 & atop_cn_nonagg == 1) ~ "Both NonAgg"
+  )) %>%
+  mutate(atop_nonagg = factor(atop_nonagg,
+                              levels = c("No pacts",  "US NonAgg",
+                                         "CN NonAgg", "Both NonAgg")),
+         across(.cols = c(atop_us_nonagg,  atop_cn_nonagg),
+                .fns  = ~ as.factor(.x))) %>% 
+  sort_cols
+```
+
+```{r}
+# NAs by variable
+# lapply(ctrl, function(x){table(is.na(x))})
+
+# To check missing by country-year per variable
+# check <- function(data, var){
+#   res <- data %>% select(all_of(c("cname", "year")), !!sym(var)) %>% 
+#     filter(is.na(!!sym(var))) 
+#   
+#   table(res$year, res$cname)
+# }
+# check(ctrl, "un_gdp")
+
+# Final check after iterating through above
+# sum(is.na(ctrl)) == 0
+```
+
+### Save
+
+```{r}
+write_rds(x    = ctrl, 
+          file = "../../Data/tidy-data/4-controls.rds")
+
+rm(list = ls())
+```

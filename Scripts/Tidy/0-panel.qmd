@@ -1,0 +1,81 @@
+---
+title : "Tidy - Panel sf"
+editor: visual
+date  : "March 1, 2023"
+---
+
+### Purpose
+
+-   Based upon `tidy-panel.R`, originally from November 15, 2021.
+
+To create a complete panel of countries using Weidmann's cshapes package between 2000-2019.
+
+Note: Military AidData ranges between the following years:
+
+-   project commitment: 2000-2017
+-   project implement : 2000-2019
+
+### Setup
+
+```{r}
+# ----------------------------------- #
+# Clear working environment
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(cshapes)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Custom functions
+# ----------------------------------- #
+tidy_panel <- function(yr, verbose = FALSE, simplify_geometry = TRUE){
+  if(verbose){print(sprintf("Working on year: %s", yr))}
+  x <- cshp(date  = as.Date(sprintf("%s-12-31", yr)),
+            useGW = FALSE) %>%
+    rename(cname = country_name,
+           ccode = cowcode) %>%
+    mutate(year  = yr) %>%
+    select(cname, ccode, year)
+  
+  if(simplify_geometry){
+    x <- rmapshaper::ms_simplify(input = x, keep = 0.03, keep_shapes = TRUE)
+  }
+  
+  x <- st_transform(x, crs = st_crs("+proj=robin +units=km"))
+  x <- x %>%
+    mutate(carea_sqkm = as.numeric(st_area(.))) %>% 
+    select(cname, ccode, year, carea_sqkm, geometry)
+  return(x)
+}
+# ----------------------------------- #
+```
+
+### Create panel
+
+```{r}
+min_yr <- 1999
+max_yr <- 2019
+
+pnl <- lapply(min_yr:max_yr, tidy_panel, verbose = TRUE) %>% bind_rows
+
+pnl <- pnl %>%
+  mutate(region = countrycode(ccode, "cown", "region")) %>% 
+  select(everything(), geometry) %>% 
+  as_tibble %>% 
+  st_set_geometry(., "geometry")
+```
+
+### Save
+
+```{r}
+write_rds(x    = pnl, 
+          file = "../../Data/tidy-data/0-panel.rds")
+```
+

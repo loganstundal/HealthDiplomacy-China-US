@@ -1,0 +1,73 @@
+---
+title : "Tidy - Control variable - geographic distance"
+editor: visual
+date  : "March 6, 2023" 
+---
+
+### Purpose
+
+### Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(cshapes)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Functions
+# ----------------------------------- #
+fx <- function(yr, verbose = TRUE){
+  if(verbose){cat(sprintf("\14Working on year: %s\n", yr))}
+  d   <- as.Date(sprintf("%s-12-31", yr))
+  tgt <- distlist(date  = d,
+                  type  = "capdist",
+                  useGW = FALSE) %>% 
+    filter(ccode1  %in% c(2, 710),
+           !ccode2 %in% c(2, 710)) %>% 
+    mutate(source = case_when(ccode1 == 2   ~ "cdist_us",
+                              ccode1 == 710 ~ "cdist_cn")) %>% 
+    rename(ccode = ccode2) %>% 
+    select(-ccode1) %>% 
+    pivot_wider(data = ., 
+                id_cols     = ccode, 
+                names_from  = source, 
+                values_from = capdist) %>% 
+    mutate(year = yr)
+  
+  return(tgt)
+}
+# ----------------------------------- #
+```
+
+### Geographic distance
+
+Computes:
+
+-   Beijing ---\> all other capitals
+
+-   DC ---\> all other capitals
+
+```{r}
+distances <- lapply(2000:2019, fx) %>% bind_rows
+```
+
+### Save
+
+```{r}
+write_rds(x    = distances, 
+          file = "../../Data/tidy-data/5-controls_distance.rds")
+
+rm(list = ls())
+```
