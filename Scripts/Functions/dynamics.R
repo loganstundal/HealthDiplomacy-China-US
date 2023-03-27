@@ -10,7 +10,7 @@
 #-----------------------------------------------------------------------------#
 # Conditional effects
 #-----------------------------------------------------------------------------#
-ceff <- function(m, z, vcv = NULL){
+conditional_eff <- function(m, z, vcv = NULL){
 
   bs <- coef(m)
   bs <- bs[c(names(bs)[str_detect(names(bs), "_lag")], z)]
@@ -298,6 +298,78 @@ mr_star_ev <- function(m, x, phi,
     res <- res %>% mutate(across(.cols = !years, cumsum))
   }
   return(res)
+}
+#---------------------------#
+
+#---------------------------#
+# probit cubic polynomial response
+#---------------------------#
+probit_response <- function(m, vcv = NULL, sims = NULL, ci = 0.95){
+  tt <- range(model.frame(m)["poly1"])
+  tt <- tt[1]:tt[2]
+
+  b <- coef(m)
+
+  x <- model.matrix(m)
+  x <- apply(x, 2, median) %>% replicate(length(tt), .) %>% t
+
+  x[,"regionSub-Saharan Africa"] <- 1
+  x[,"poly1"] <- tt
+  x[,"poly2"] <- tt^2
+  x[,"poly3"] <- tt^3
+
+  x0 <- x
+  x1 <- x
+
+  xvar <- names(b)[str_detect(names(b), "mil_health")]
+  x0[,xvar] <- 0
+  # x1[,xvar] <- c(rep(0, 4), rep(1, length(tt)-4))
+  x1[,xvar] <- 1
+
+  if(!is.null(sims)){
+
+    if(is.null(vcv)){stop("Need variance-covariance matrix.")}
+
+    res <- matrix(data = NA, nrow = length(tt) * 3, ncol = sims)
+
+    for(i in 1:sims){
+      bs <- MASS::mvrnorm(n = 1, mu = b, Sigma = vcv)
+
+      xb0 <- x0 %*% bs
+      xb1 <- x1 %*% bs
+
+      p0 <- as.vector(pnorm(xb0))
+      p1 <- as.vector(pnorm(xb1))
+      fd <- p1 - p0
+
+      res[,i] <- c(p0,p1,fd)
+    }
+    a  <- (1 - ci) / 2
+    a2 <- 1 - a
+
+    res <- apply(res, 1, quantile, probs = c(a, 0.5, a2)) %>% t
+    colnames(res) <- c("lb", "md", "ub")
+
+    out <- bind_cols(
+      tt = rep(tt, 3),
+      vr = rep(c("p0", "p1", "fd"), each = length(tt)),
+      res
+    )
+  } else{
+
+    xb0 <- x0 %*% b
+    xb1 <- x1 %*% b
+
+    p0  <- as.vector(pnorm(xb0))
+    p1  <- as.vector(pnorm(xb1))
+    fd <- p1 - p0
+
+    out <- data.frame(
+      tt = rep(tt, 3),
+      vr = rep(c("p0", "p1", "fd"), each = length(tt)),
+      vl = c(p0, p1, fd))
+  }
+  return(out)
 }
 #---------------------------#
 #-----------------------------------------------------------------------------#
