@@ -1,0 +1,372 @@
+---
+title : "Analysis -  General health"
+editor: visual
+date  : "March 6, 2023"
+---
+
+## Purpose
+
+Estimate general health aid models.
+
+## Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(texreg)
+library(sandwich)
+library(lmtest)
+
+library(spdep)
+library(spatialreg)
+library(AER) # for tobit robustness
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+d <- read_rds("../../Data/analysis-data/0-analysis_data.rds")
+load("../../Data/analysis-data/0-spatial_weights.rdata")
+# ----------------------------------- #
+```
+
+### Note
+
+1.  All primary results are robust to the exclusion of Iraq - which received most US military health and general health aid during this time period.
+
+### Formulas
+
+-   f1 \~ base model (no controls)
+-   f2 \~ base model + health factors (wealth, life expectancy, disease)
+-   f3 \~ base model + political factors (humanitarian crises, war, political alliance, trade, and democracy)
+-   f4 \~ full model (f1 + f2 + f3)
+
+```{r}
+# fs <- list(
+#   "f1" = . ~ year + ccode,
+#   "f2" = . ~ 
+#     # cdist_us +
+#     un_gdppc +
+#     un_gdppc2 +
+#     un_lifeexpec_yrs +
+#     un_lifeexpec_yrs2 +
+#     un_infdeath_p1000 +
+#     # I(un_infdeath_p1000^2) +
+#     ghdx_ncd_prevalence_pc + ghdx_cmd_prevalence_pc +
+#     # emdat_disasters_total + 
+#     emdat_deaths_total +
+#     
+#     # trade_usa_gdp * trade_chn_gdp +
+#     trade_net +
+#     
+#     ged_major +
+#     atop_nonagg +
+#     vdem + vdem2 +
+#     year + ccode
+# )
+
+base    <-  . ~ ccode + year
+health  <-  update(base, ~ . + un_gdppc + un_gdppc2 + 
+                     un_lifeexpec_yrs + un_lifeexpec_yrs2 + un_infdeath_p1000 + 
+                     ghdx_ncd_prevalence_pc + ghdx_cmd_prevalence_pc)
+politic <-  update(base, ~ . + emdat_disasters_peryr + ged_major + atop_nonagg + 
+                     trade_net + vdem + vdem2)
+full    <-  update(health, ~ . + emdat_disasters_peryr + ged_major + atop_nonagg + 
+                     trade_net + vdem + vdem2)
+
+fs <- list(base = base, health = health, politic = politic, full = full)
+rm(base, health, politic, full)
+```
+
+------------------------------------------------------------------------
+
+# \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
+
+## Temporal models
+
+```{r}
+# United states - simple and complex temporal dynamic models
+us_mods <- lapply(fs, function(x){
+  return(lm(formula = update(x, dah_us_per ~ dah_us_per_lag + dah_cn_per + .), data = d))
+})
+us_mods$complex <- lm(formula = update(fs$full, dah_us_per ~ dah_us_per_lag * dah_cn_per + .), 
+                      data    = d)
+
+# China - simple and complex temporal dynamic models
+cn_mods <- lapply(fs, function(x){
+  return(lm(formula = update(x, dah_cn_per ~ dah_cn_per_lag + dah_us_per + .), data = d))
+})
+cn_mods$complex <- lm(formula = update(fs$full, dah_cn_per ~ dah_cn_per_lag * dah_us_per + .), 
+                      data    = d)
+
+mods_general <- list("us" = us_mods, 
+                     "cn" = cn_mods) %>% 
+  list_flatten()
+
+rm(us_mods, cn_mods)
+
+# Note - results significant with inclusion of rival lag
+# m_us <- lm(update(f1, dah_us_per ~ dah_us_per_lag + dah_cn_per + dah_cn_per_lag + .), data = d)
+# m_cn <- lm(update(f1, dah_cn_per ~ dah_cn_per_lag + dah_us_per + dah_us_per_lag + .), data = d)
+```
+
+## Temporal - Robust SEs & GOF
+
+```{r}
+mods_general_gof <- list(
+  "FE Unit" = rep("Yes", length(mods_general)),
+  "FE Time" = rep("Yes", length(mods_general)),
+  "Obs."    = lapply(mods_general, function(x) nrow(model.matrix(x))),
+  "Adj. R2" = lapply(mods_general, function(x) round(summary(x)$adj.r.squared, 2)),
+  "Loglik"  = lapply(mods_general, function(x) round(logLik(x), 2))
+)
+```
+
+```{r}
+mods_general_robust <- lapply(mods_general, function(x){
+  vcv <- vcovPC(x = x, cluster = ~ ccode + year, pairwise = F)
+  return(vcv)
+})
+```
+
+## Temporal - complex dynamic robustness
+
+Note - this small commented out code block demonstrates the temporal complex dynamic interaction between \phi and rival health investment is robust even in the temporal interactions such as between GDP per capita, life expectancy, or infant deaths.
+
+```{r}
+# mus <- lm(update(fs$f2, dah_us_per ~ dah_us_per_lag * dah_cn_per + dah_us_per_lag * un_infdeath_p1000 +.),
+#          data = d)
+# mcn <- lm(update(fs$f2, dah_cn_per ~ dah_cn_per_lag * dah_us_per + dah_cn_per_lag * un_infdeath_p1000 +.), 
+#          data = d)
+# 
+# mm <- list(mus, mcn)
+# mm <- lapply(mm, function(x){
+#   vcv <- vcovPC(x = x, cluster = ~ ccode + year, pairwise = F)
+#   m <- coeftest(x = x, vcov. = vcv)
+#   return(m)
+# })
+# screenreg(mm, omit.coef = "ccode|year")
+```
+
+## Temporal - LR tests
+
+In addition to the significance of the interaction term in the Chinese complex dynamics models, these LR tests provide additional evidence that the *persistence* of Chinese health aid allocations over time vary conditional on US health aid presence.
+
+```{r}
+diagnostics <- list()
+
+diagnostics[["temporal_lrtests"]] <- list("CN" = lrtest(mods_general$cn_full,
+                                                        mods_general$cn_complex),
+                                          "US" = lrtest(mods_general$us_full,
+                                                        mods_general$us_complex))
+```
+
+------------------------------------------------------------------------
+
+# \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
+
+## Spatial
+
+### Diagnostic tests
+
+#### Moran's I Global
+
+```{r}
+diagnostics$spatial_moran <- lapply(list("CN" = d$dah_cn_per, "US" = d$dah_us_per), 
+                                    moran.mc,
+                                    listw = d_spatial$lw_knn,
+                                    nsim  = 1e3, 
+                                    alternative = "two.sided")
+
+# diagnostics$spatial_moran
+```
+
+#### Lagrange Multiplier
+
+```{r}
+diagnostics$spatial_lagrange <- lapply(mods_general[str_detect(names(mods_general), "full|complex")],
+                                       lm.LMtests,
+                                       listw = d_spatial$lw_knn,
+                                       test  = c("LMerr", "LMlag", "RLMerr", "RLMlag", "SARMA"))
+
+# lapply(diagnostics$spatial_lagrange, summary)
+```
+
+## Spatial Models
+
+NOTE - spatial results ARE robust to inverse distance W operationalization. However, 3-knn is computationally easier.
+
+```{r}
+sp_us <- sacsarlm(formula = formula(mods_general$us_complex),
+                  data    = d,
+                  listw   = d_spatial$lw_knn)
+
+sp_cn <- sacsarlm(formula = formula(mods_general$cn_complex),
+                  data    = d,
+                  listw   = d_spatial$lw_knn)
+
+mods_general$us_star <- sp_us
+mods_general$cn_star <- sp_cn
+
+mods_general <- mods_general[c(paste("us", c("base", "health", "politic", "full", "complex", "star"),
+                                     sep = "_"),
+                               paste("cn", c("base", "health", "politic", "full", "complex", "star"),
+                                     sep = "_")) ]
+
+rm(sp_us, sp_cn)
+```
+
+```{r}
+# This stupid funciton refuses to drop a factor level (either 1 too many 
+# ccode or atop values. Forcing no intercept (-1) does NOT resolve).
+# sp_us1 <- stsls(formula = formula(mods_general$US$base_complex),
+#                 data    = d,
+#                 listw   = d_spatial$lw_knn,
+#                 robust  = TRUE,
+#                 HC = "HC0")
+```
+
+## Spatial - LR tests
+
+```{r}
+#| warning: false
+
+diagnostics$spatial_lrtests <- list("CN" = lrtest(mods_general$cn_complex,
+                                                  mods_general$cn_star),
+                                    "US" = lrtest(mods_general$us_complex,
+                                                  mods_general$us_star))
+```
+
+## Save
+
+```{r}
+save(mods_general, mods_general_robust, mods_general_gof, diagnostics,
+     file = "../../Data/analysis-data/2-models_health-general.Rdata")
+```
+
+------------------------------------------------------------------------
+
+# \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
+
+## Robustness checks
+
+-   Additional models to check robustness of results.
+
+### Tobit models
+
+```{r}
+# Note - impossible to fit with fixed effects. Computationally singular with region FE as well.
+
+# United States - simple and complex temporal dynamics
+us <- tobit(formula = update(formula(mods_general$us_full), ~ . - ccode - year),
+             left    = 0,
+             right   = 100,
+             dist    = 'gaussian',
+             data    = d)
+
+cn <- tobit(formula = update(formula(mods_general$cn_full), ~ . - ccode - year),
+             left    = 0,
+             right   = 100,
+             dist    = 'gaussian',
+             data    = d)
+
+mods_tobit <- list("us" = us, "cn" = cn)
+
+# Tobit model GOFs
+mods_tobit_gof <- list(
+  "Obs."    = lapply(mods_tobit, function(x) nrow(model.matrix(x))),
+  "Loglik"  = lapply(mods_tobit, function(x) round(logLik(x), 2))
+)
+
+# Cluster robust standard errors for tobit models
+mods_tobit_robust <- lapply(mods_tobit, function(x){
+  return(coeftest(x, vcov. = vcovCL(x, cluster = ~ ccode + year, type = "HC1")))
+})
+```
+
+### Panel VAR
+
+```{r}
+library(panelvar)
+
+y <- d %>% 
+  select(ccode, year, dah_us_per, dah_cn_per) %>% 
+  st_drop_geometry %>% 
+  mutate(across(.cols = c(ccode, year), .fns = as.numeric)) %>% 
+  arrange(ccode, year) %>% 
+  as.data.frame() %>% 
+  drop_na()
+
+# Y <- as.matrix(Y)
+
+m <- pvargmm(
+  dependent_vars = c("dah_us_per", "dah_cn_per"),
+  lags           = 2,
+  transformation = "fd",
+  steps          = "twostep",
+  data           = y,
+  panel_identifier = c("ccode", "year")
+)
+m
+
+m <- pvarfeols(
+  dependent_vars = c("dah_us_per", "dah_cn_per"),
+  lags           = 2,
+  transformation = "demean",
+  data           = y,
+  panel_identifier = c("ccode", "year")
+)
+m
+
+# imp <- girf(model = m, n.ahead = 5, ma_approx_steps = 8)
+imp <- oirf(model = m, n.ahead = 5)
+plot(imp)
+```
+
+### PLM - same as lm results
+
+```{r}
+library(plm)
+
+pd <- pdata.frame(d %>% st_drop_geometry, index = c("ccode", "year"))
+
+full <- ~ un_gdppc + un_gdppc2 + 
+  un_lifeexpec_yrs + un_lifeexpec_yrs2 + un_infdeath_p1000 + 
+  ghdx_ncd_prevalence_pc + ghdx_cmd_prevalence_pc + 
+  emdat_disasters_peryr + ged_major + atop_nonagg + 
+  trade_net + vdem + vdem2
+
+m1 <- plm(formula = update(full, dah_us_per ~ dah_us_per_lag + dah_cn_per + dah_cn_per_lag + .),
+          data = pd,
+          # effect = "twoways",
+          model = "fd")
+summary(m1)
+
+mm <- coeftest(x = m1, vcov. = vcovBK(m1, type = "HC0"))
+mm
+mm <- coeftest(x = m1, vcov. = vcovHC(m1, type = "HC1"), cluster = c("group", "time"))
+mm
+
+m1 <- plm(formula = update(full, dah_cn_per ~ dah_cn_per_lag + dah_us_per + dah_us_per_lag + .),
+          data = pd,
+          # effect = "twoways",
+          model = "fd")
+summary(m1)
+
+mm <- coeftest(x = m1, vcov. = vcovBK(m1, type = "HC0"))
+mm
+mm <- coeftest(x = m1, vcov. = vcovHC(m1, type = "HC1"), cluster = c("group", "time"))
+mm
+
+```

@@ -1,0 +1,307 @@
+---
+title : "Analysis -  Military health"
+editor: visual
+date  : "March 8, 2023"
+---
+
+## Purpose
+
+Estimate military health aid models.
+
+## Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(texreg)
+library(sandwich)
+library(lmtest)
+library(margins)
+library(kableExtra)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+d <- read_rds("../../Data/analysis-data/0-analysis_data.rds")
+# ----------------------------------- #
+```
+
+## Military health
+
+```{r}
+
+# COMMENTED OUT IS LIKELY COORRECT WAY
+# In case I messed up the polynomial.
+d <- d %>%
+  st_drop_geometry %>%
+  arrange(ccode, year) %>%
+  group_by(ccode) %>%
+  mutate(change = mil_health_us != mil_health_us_lag) %>%
+  mutate(poly1 = sequence(table(cumsum(change) + 1)),
+         poly2 = poly1^2,
+         poly3 = poly1^3)
+```
+
+```{r}
+# d <- d %>%
+#   arrange(as.numeric(ccode), as.numeric(year)) %>% 
+#   group_by(ccode) %>% 
+#   mutate(poly1 = 1:n(),
+#          poly2 = poly1^2,
+#          poly3 = poly1^3) %>% 
+#   ungroup
+```
+
+### Formula
+
+```{r}
+# fs <- list(
+#   "f1" = . ~ poly1 + poly2 + poly3 + region,
+#   "f2" = . ~ 
+#     # cdist_us +
+#     un_gdppc +
+#     un_gdppc2 +
+#     un_lifeexpec_yrs +
+#     # un_lifeexpec_yrs2 +
+#     un_infdeath_p1000 +
+#     ghdx_ncd_prevalence_pc + ghdx_cmd_prevalence_pc +
+#     emdat_disasters_total + emdat_deaths_total +
+#     ged_major +
+#     atop_nonagg +
+#     vdem + I(vdem^2) +
+#     poly1 + poly2 + poly3 + 
+#     region
+# )
+
+base    <-  . ~ poly1 + poly2 + poly3 + region
+full    <-  update(base, ~ . + un_gdppc + un_gdppc2 + 
+                     un_lifeexpec_yrs + un_lifeexpec_yrs2 + un_infdeath_p1000 + 
+                     ghdx_ncd_prevalence_pc + ghdx_cmd_prevalence_pc + 
+                     emdat_disasters_peryr + ged_major + atop_nonagg + 
+                     trade_net + vdem + vdem2)
+
+fs <- list(base = base, full = full)
+rm(base, full)
+```
+
+### Fit
+
+```{r}
+us <- lapply(fs, function(x){
+  glm(formula = update(x, mil_health_us ~ mil_health_cn + .),
+      data    = d, 
+      family  = binomial(link = "probit"))
+})
+
+cn <- lapply(fs, function(x){
+  glm(formula = update(x, mil_health_cn ~ mil_health_us + .),
+      data    = d, 
+      family  = binomial(link = "probit"))
+})
+
+# Models list
+mods_military <- list("us" = us, "cn" = cn) %>% list_flatten()
+
+# Goodness of fit statistics
+mods_military_gof <- list(
+  "FE Region"      = rep("Yes", length(mods_military)),
+  "Time polynomial"= rep("Yes", length(mods_military)),
+  "Obs."           = lapply(mods_military, function(x) nrow(model.matrix(x))),
+  "Log Likelihood" = lapply(mods_military, function(x) round(logLik(x) %>% as.numeric(), 2))
+)
+
+# rm(us, cn)
+```
+
+## DYNAMIC EFFECTS PER CARTER AND SIGNORINO
+
+-   NOTE -- figure out which spline is right ! Read the paper - the two splines I have are producing distinct curves.
+-   SEE `tmp-probit-dynamics.R`
+
+### Robust SEs
+
+```{r}
+mods_military_robust <- lapply(mods_military, function(x){
+  vcv <- vcovPC(x = x, cluster = ~ ccode + year, pairwise = F)
+  # vcv <- vcovCL(x = x, cluster = ~ ccode + year)
+  # vcv <- vcovHC(x = x, type = "HC0")
+  # mrb <- coeftest(x = x, vcov. = vcv)
+  return(vcv)
+})
+```
+
+### Table
+
+```{r}
+nmod <- length(mods_military)
+mm <- lapply(names(mods_military), function(x){return(
+  coeftest(x = mods_military[[x]], 
+           vcov. = mods_military_robust[[x]])
+)})
+screenreg(mm,
+          digits = 3,
+          # custom.coef.map = var_names,
+          custom.header = list("US" = 1:(nmod/2), "CN" = ((nmod/2)+1):nmod),
+          stars = c(0.001, 0.01, 0.05, 0.1),
+          omit.coef = "year|region|cname|ccode",
+
+          custom.gof.rows = mods_military_gof
+
+          # custom.note = cnote
+          )
+```
+
+------------------------------------------------------------------------
+
+# \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
+
+## Quantities of interest
+
+### Military probabilities
+
+```{r}
+p_cn_on_us <- margins(model     = mods_military$us_full, 
+                      variables = "mil_health_cn", type = "response",
+                      vcov      = mods_military_robust$us_base)
+p_us_on_cn <- margins(model     = mods_military$cn_full, 
+                      variables = "mil_health_us", type = "response",
+                      vcov      = mods_military_robust$cn_full)
+```
+
+```{r}
+p_cn_on_us <- summary(p_cn_on_us, level = 0.9) %>% as_tibble
+p_us_on_cn <- summary(p_us_on_cn, level = 0.9) %>% as_tibble
+
+mods_military_qoi <- bind_rows(p_cn_on_us, p_us_on_cn) %>% 
+  dplyr::select(factor, AME, lower, upper) %>% 
+  mutate(across(.cols = !factor, .fns = ~(.x * 100))) %>% 
+  mutate(
+    x    = c(1, 1.5),
+    xlab = c("US", "CN"),
+    clab = c("CN military presence", "US military health presence")
+  )
+```
+
+```{r}
+mil_probs <- ggplot(mods_military_qoi, aes(x = x)) +
+  geom_errorbar(aes(ymin = lower, ymax = upper, color = clab),
+                width = 0.1) +
+  geom_point(aes(y = AME, color = clab)) +
+  geom_hline(aes(yintercept = 0), color = "black", linewidth = 0.3) +
+  theme(
+    panel.background   = element_rect(fill = NA, color = "black"),
+    panel.grid.major.y = element_line(color= "gray80", linetype = "dotted", linewidth = 0.25),
+    axis.title.x       = element_blank(),
+    legend.position    = "bottom"
+  ) + 
+  scale_x_continuous(breaks = mods_military_qoi$x, labels = mods_military_qoi$xlab) + 
+  # lims(x = c(0.75, 1.75), y = c(-1, 15)) + 
+  # coord_fixed(ratio = .1, xlim = c(0.75, 1.75), ylim = c(-1, 15), expand = T) +
+  guides(color = guide_legend(title = "Effect of:", nrow = 2, title.position = "top")) + 
+  labs(
+    title = "Predicted probability of military health presense",
+    subtitle = "in response to military health presenece of other power")
+
+# ggsave(plot = mil_probs, 
+#        filename = "../../Results/Figures/3-health_military-probabilities.png",
+#        device = "png",
+#        width    = 5.0,
+#        height   = 5.0, 
+#        units    = "in")
+
+png(filename = "../../Results/Figures/3-health_military-probabilities.png",
+    width    = 5, 
+    height   = 5,
+    units    = "in",
+    res      = 360)
+mil_probs
+dev.off()
+
+rm(mil_probs)
+```
+
+### Save
+
+```{r}
+save(mods_military, mods_military_gof, mods_military_qoi, 
+     file = "../../Data/analysis-data/3-models_health-military.Rdata")
+
+# rm(list = ls())
+```
+
+------------------------------------------------------------------------
+
+# \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
+
+## Robustness checks
+
+-   Additional models to explore robustness of results
+
+Note - this subsetting block tests robustness of results by retaining only those countries in the data which have at least 1 year of either US or Chinese military health aid. Main results retain their significance at the 0.1 level.
+
+### Subset - at least 1 year mil aid
+
+```{r}
+dsub <- d %>%
+  st_drop_geometry() %>%
+  group_by(cname) %>%
+  summarize(tgt = ifelse(any(mil_health_cn == 1) | any(mil_health_us == 1), 1, 0)) %>%
+  ungroup %>%
+  filter(tgt == 1) %>%
+  pull(cname)
+
+d2 <- d %>%
+  filter(cname %in% dsub)
+```
+
+### SAR Probits
+
+```{r}
+#| eval: false
+
+library(spatialprobit)
+
+load("Data/analysis-data/0-spatial_weights.rdata")
+w <- Matrix(d_spatial$w_knn, sparse = TRUE)
+
+?sarprobit
+us <- sarprobit(formula = update(fs$full, mil_health_us ~ mil_health_us_lag + 
+                                   mil_health_cn + . - region),
+                W       = w,
+                data    = d,
+                ndraw   = 2e3,
+                burn.in = 1e3)
+
+summary(us)
+
+cn <- sarprobit(formula = update(fs$full, mil_health_cn ~ mil_health_cn_lag + 
+                                   mil_health_us + . - region),
+                W       = w,
+                data    = d,
+                ndraw   = 2e3,
+                burn.in = 1e3)
+
+summary(cn)
+```
+
+Concerning military model fit:
+
+-   With contemporaneous rival -- US and China significant
+-   With contemporaneous rival + lag rival - Only US significant
+-   With contemporaneous rival + lag rival + own lag - Only US significant
+-   With contemporaneous rival + own lag - **Both significant**
+    -   NOTE - not robust to inclusion of year FE - but probably overkill with time poly.
+
+    -   Plus - based on error appears separation occurs with year FE.

@@ -1,0 +1,176 @@
+---
+title      : "Analysis -  Model results"
+editor     : visual
+format     : 
+  pdf :
+    include-in-header: 
+      text: |
+        \usepackage{graphicx}
+        \usepackage{booktabs}
+        \usepackage{threeparttable}
+echo       : false
+keep-tex   : false
+date       : "March 8, 2023"
+---
+
+### Purpose
+
+To create table outputs from fit model objects and QOIs.
+
+### Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(margins)
+library(texreg)
+library(kableExtra)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+load("../../Data/analysis-data/2-models_health-general.Rdata")
+load("../../Data/analysis-data/3-models_health-military.Rdata")
+# ----------------------------------- #
+```
+
+### Custom table elements
+
+```{r}
+var_names <- list(
+  "dah_us_per_lag"           = "US Aid, lag",
+  "dah_cn_per"               = "CN Aid",
+  "dah_cn_per_lag"           = "CN Aid, lag",
+  "dah_us_per"               = "US Aid",
+         
+  "mil_health_us"            = "US Military health",
+  "mil_health_us_lag"        = "US Military health, lag",
+  "mil_health_cn"            = "CN Military health",
+  "mil_health_cn_lag"        = "CN Military health, lag",
+         
+  "cdist_us"                 = "Distance - US*",
+  "un_gdppc"                 = "GDP pc*",
+  "un_lifeexpec_yrs"         = "Life expec.",
+  "un_lifeexpec_yrs2"        = "Life expec.^2",
+  "un_infdeath_p1000"        = "Infant death*",
+  "ghdx_ncd_prevalence_pc"   = "Non-comm. disease pc*",
+  "ghdx_cmd_prevalence_pc"   = "Comm. disease pc*",
+  "emdat_disasters_total"    = "Humanitarian crises events",
+  "emdat_deaths_total"       = "Humanitarian crisis deaths*",
+  "ged_major"                = "Civil war", 
+  "atop_nonaggUS NonAgg"     = "Non-aggression pact: US",
+  "atop_nonaggCN NonAgg"     = "Non-aggression pact: CN",
+  "atop_nonaggBoth NonAgg"   = "Non-aggression pact: Both",
+  "vdem"                     = "Democracy",
+  
+  # "poly1"                 = "poly1",
+  # "poly2"                 = "poly2",
+  # "poly3"                 = "poly3",
+  "(Intercept)"              = "Intercept"
+)
+
+# cnote <- paste0("%stars\n",
+#                 "* denotes logged value. Non-aggression pact reference category is Neither.\n",
+#                 "Panel corrected cluster-robust standard errors in parantheses.")
+
+cnote <- paste0(
+  "\\item %stars.\\\\\n",
+  "\\item * denotes logged value. Non-aggression pact reference category is Neither.\n",
+  "\\item Panel corrected cluster-robust standard errors in parantheses."
+)
+
+ngen <- length(mods_general)
+nmil <- length(mods_military)
+```
+
+{{< pagebreak >}}
+
+### General health aid models
+
+```{r}
+#| results: asis
+
+texreg(mods_general,
+       caption = "General health",
+       digits = 3,
+       custom.coef.map = var_names,
+       custom.header = list("US" = 1:(ngen / 2), "CN" = ((ngen/2)+1):ngen),
+       omit.coef = "year|region|cname|ccode",
+      
+       custom.gof.rows = c(list("FE: Country" = rep("Yes", ngen),
+                                "FE: Year"    = rep("Yes", ngen)),
+                           mods_general_gof),
+
+       custom.note = cnote,
+       booktabs = TRUE,
+       threeparttable = TRUE,
+       scalebox = 0.75,
+       float.pos = "h!",
+       use.packages = FALSE,
+       custom.model.names = paste("Model", 1:ngen)
+        # file = "../../Results/Tables/table-health_general.html"
+        )
+```
+
+{{< pagebreak >}}
+
+### Military health aid
+
+```{r}
+#| results: asis
+
+texreg(mods_military,
+       caption = "Military health",
+       digits = 3,
+       custom.coef.map = var_names,
+       custom.header = list("US" = 1:(nmil/2), "CN" = ((nmil/2)+1):nmil),
+       stars = c(0.001, 0.01, 0.05, 0.1),
+       omit.coef = "year|region|cname|ccode",
+      
+       custom.gof.rows = c(list("Time polynomial" = rep("Yes", nmil),
+                                "FE: Region"      = rep("Yes", nmil)),
+                           mods_military_gof),
+
+       custom.note = cnote,
+       booktabs = TRUE,
+       threeparttable = TRUE,
+       scalebox = 0.75,
+       float.pos = "h!",
+       use.packages = FALSE,
+       custom.model.names = paste("Model", 1:nmil)
+        # file = "../../Results/Tables/table-health_military.html"
+       )
+```
+
+{{< pagebreak >}}
+
+#### Marginal effects
+
+```{r}
+mods_military_qoi2 <- mods_military_qoi %>% 
+  rename(effect_of = clab, 
+         on = xlab) %>% 
+  select(effect_of, on, AME, lower, upper)
+
+kbl(mods_military_qoi2, 
+    booktabs  = TRUE,
+    position  = "h",
+    col.names = c("Effect of", "On military health activity of:", "AME", "Lower 90%", "Upper 90%"),
+    digits    = 2, 
+    caption   = "Effect of military health presence") %>% 
+  kable_paper(full_width = FALSE) 
+```
+
+![Predicted probabilities (US - Model 6, CN - Model 8)](../../Results/Figures/3-health_military-probabilities.png)

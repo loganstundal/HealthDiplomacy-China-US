@@ -1,0 +1,480 @@
+---
+title      : "Analysis -  Descriptive Analysis"
+editor     : visual
+format     : docx
+prefer-html: true
+echo       : false
+date       : "March 8, 2023"
+---
+
+### Purpose
+
+Calculate descriptive statistics for general and military health in both tabular and graphical formats.
+
+### Setup {.unnumbered .unlisted}
+
+```{r}
+#| warning: false
+#| message: false
+#| echo:    false
+
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(kableExtra)
+# library(countrycode)
+# library(lubridate)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+d <- read_rds("../../Data/analysis-data/0-analysis_data.rds")
+# ----------------------------------- #
+```
+
+### Top-10 military health recipients
+
+Calculate top recipients based on three metrics:
+
+1.  Total number of projects
+2.  Total amount spent
+3.  Total amount spent per project (average)
+
+Data coverage includes all projects between `r min(d$year)` and `r max(d$year)`.
+
+```{r}
+#| echo:    false
+
+mil_top <- d %>%
+  st_drop_geometry %>% 
+  rename(mil_health_us_amount = usaid_amount_mil, 
+         mil_health_cn_amount = aiddata_amount_mil) %>% 
+  select(cname, 
+         mil_health_us_count,  mil_health_cn_count,
+         mil_health_us_amount, mil_health_cn_amount) %>% 
+  group_by(cname) %>% 
+  summarize(across(.cols = ends_with("count"), 
+                   .fns  = sum),
+            across(.cols = ends_with("amount"),
+                   .fns  = ~(sum(.x, na.rm = TRUE) / 1e6))) %>% 
+  ungroup %>% 
+  mutate(
+    mil_health_us_perproject = mil_health_us_amount / mil_health_us_count,
+    mil_health_cn_perproject = mil_health_cn_amount / mil_health_cn_count
+    ) %>% 
+  mutate(
+    mil_health_us_perproject = case_when(
+      (mil_health_us_count == 0 & mil_health_us_amount == 0) ~ 0, TRUE ~ mil_health_us_perproject
+    ),
+    mil_health_cn_perproject = case_when(
+      (mil_health_cn_count == 0 & mil_health_cn_amount == 0) ~ 0, TRUE ~ mil_health_cn_perproject
+    )
+  )
+```
+
+Note - all summary calculations include top-11 for US and top-10 for China to facilitate comparison with US including or excluding Iraq.
+
+{{< pagebreak >}}
+
+#### Top military - total projects
+
+```{r}
+#| echo:    false
+
+mil_top_us <- mil_top %>% 
+  select(cname, mil_health_us_count) %>%
+  arrange(desc(mil_health_us_count)) %>% 
+  slice(1:11) %>% 
+  mutate(us = sprintf("%s - %s", cname, mil_health_us_count)) %>% 
+  pull(us)
+
+mil_top_cn <- mil_top %>% 
+  select(cname, mil_health_cn_count) %>%
+  arrange(desc(mil_health_cn_count)) %>% 
+  slice(1:10) %>% 
+  mutate(cn = sprintf("%s - %s", cname, mil_health_cn_count)) %>% 
+  pull(cn)
+
+mil_top_ct <- tibble(
+  "United States" = mil_top_us, 
+  "China"         = c(mil_top_cn, NA)
+)
+```
+
+```{r}
+#| echo:    false
+
+kbl(mil_top_ct, caption = "Top military health recipients: total projects") %>% 
+  # row_spec(0:11, bold = F, color = "black", background = "white") %>% 
+    footnote(.,
+           general = paste0(
+             "Data sources: US - USAID, CN - AidData."
+           ))
+```
+
+{{< pagebreak >}}
+
+#### Top military - total spending
+
+```{r}
+#| echo:    false
+
+mil_top_us <- mil_top %>% 
+  select(cname, mil_health_us_amount) %>%
+  arrange(desc(mil_health_us_amount)) %>% 
+  slice(1:11) %>% 
+  mutate(mil_health_us_amount = as.character(round(mil_health_us_amount, 2))) %>% 
+  mutate(us = sprintf("%s - %s", cname, mil_health_us_amount)) %>% 
+  pull(us)
+
+mil_top_cn <- mil_top %>% 
+  select(cname, mil_health_cn_amount) %>%
+  arrange(desc(mil_health_cn_amount)) %>% 
+  slice(1:10) %>% 
+  mutate(mil_health_cn_amount = as.character(round(mil_health_cn_amount, 2))) %>% 
+  mutate(cn = sprintf("%s - %s", cname, mil_health_cn_amount)) %>% 
+  pull(cn)
+
+mil_top_sp <- tibble(
+  "United States" = mil_top_us, 
+  "China"         = c(mil_top_cn, NA)
+)
+```
+
+```{r}
+#| echo:    false
+
+kbl(mil_top_sp, 
+    caption = "Top military health recipients: total spending") %>% 
+  # row_spec(0:11, bold = F, color = "black", background = "white") %>% 
+  footnote(.,
+           general = paste0(
+             "Amounts reported in 2017 constant USD, millions.\n",
+             "Data sources: US - USAID, CN - AidData."
+           ))
+```
+
+{{< pagebreak >}}
+
+#### Top military - average spending per project
+
+```{r}
+#| echo:    false
+
+mil_top_us <- mil_top %>% 
+  select(cname, mil_health_us_perproject) %>%
+  arrange(desc(mil_health_us_perproject)) %>% 
+  slice(1:11) %>% 
+  mutate(mil_health_us_perproject = as.character(round(mil_health_us_perproject, 2))) %>% 
+  mutate(us = sprintf("%s - %s", cname, mil_health_us_perproject)) %>% 
+  pull(us)
+
+mil_top_cn <- mil_top %>% 
+  select(cname, mil_health_cn_perproject) %>%
+  arrange(desc(mil_health_cn_perproject)) %>% 
+  slice(1:10) %>% 
+  mutate(mil_health_cn_perproject = as.character(round(mil_health_cn_perproject, 2))) %>% 
+  mutate(cn = sprintf("%s - %s", cname, mil_health_cn_perproject)) %>% 
+  pull(cn)
+
+mil_top_pp <- tibble(
+  "United States" = mil_top_us, 
+  "China"         = c(mil_top_cn, NA)
+)
+```
+
+```{r}
+#| echo:    false
+
+kbl(mil_top_pp, caption = "Top military health recipients: average spending per project") %>% 
+  # row_spec(0:11, bold = F, color = "black", background = "white") %>% 
+  footnote(.,
+           general = paste0(
+             "Amounts reported in 2017 constant USD, millions per project.\n",
+             "Data sources: US - USAID, CN - AidData."
+           ))
+```
+
+{{< pagebreak >}}
+
+### Summary statistics
+
+#### Health outcomes
+
+```{r}
+#| echo:    false
+
+y <- d %>% 
+  
+  st_drop_geometry %>% 
+  select(dah_us, dah_us_per, 
+         dah_cn, dah_cn_per,
+         
+         mil_health_us_count, mil_health_us, 
+         mil_health_cn_count, mil_health_cn,
+         
+         cdist_us, un_gdppc, un_lifeexpec_yrs, un_infdeath_p1000, 
+         ghdx_cmd_prevalence_pc, ghdx_ncd_prevalence_pc, 
+         emdat_disasters_total, emdat_deaths_total, 
+         ged_major, 
+         atop_us_nonagg, atop_cn_nonagg, 
+         vdem
+         ) %>% 
+  
+  mutate(across(.cols = c(dah_us, dah_cn), 
+                .fns  = ~(.x / 1e6))) %>% 
+  
+  summarize(across(.cols = everything(), 
+                   .fns  = list("Mean"   = ~mean(.x,   na.rm = TRUE),
+                                "Median" = ~median(.x, na.rm = TRUE),
+                                "SD"     = ~sd(.x,     na.rm = TRUE),
+                                "Min"    = ~min(.x,    na.rm = TRUE),
+                                "Max"    = ~max(.x,    na.rm = TRUE),
+                                "N"      = ~n()),
+                   .names= "{.col}.{.fn}"))
+
+y <- y %>% 
+  pivot_longer(data = ., 
+               cols    = everything(),
+               names_to = c("var", "stat"), 
+               names_sep = "[.]", 
+               values_to = "val")
+
+y <- y %>% 
+  pivot_wider(., 
+              id_cols = var, 
+              names_from = stat, 
+              values_from = val) %>% 
+  mutate(vtype = case_when(
+    str_starts(var, "dah|mil") ~ "outcome", 
+    TRUE ~ "control"
+  ))
+
+y <- y %>% 
+  mutate(Source = case_when(
+    str_detect(var, "_cn") ~ "China",
+    str_detect(var, "_us") ~ "United States"
+    )) %>% 
+  mutate(Measure = case_when(
+    var %in% c("dah_us", "dah_cn")         ~ "Health spending (USD)", 
+    var %in% c("dah_us_per", "dah_cn_per") ~ "Health allocation (% budget)",
+    var %in% c("mil_health_us", "mil_health_cn") ~ "Military health (binary)",
+    var %in% c("mil_health_us_count", "mil_health_cn_count") ~ "Military health (projects)",
+    
+    var == "cdist_us" ~ "Distance from US (km, log)",
+    var == "un_gdppc" ~ "GDP per capita (log)",
+    var == "un_lifeexpec_yrs" ~ "Life expectancy (years)",
+    var == "un_infdeath_p1000" ~ "Infant death rate (per 1000 live births, log)",
+    var == "ghdx_cmd_prevalence_pc" ~ "Communicable disease per capita (log)",
+    var == "ghdx_ncd_prevalence_pc" ~ "Non-communicable disease per capita (log)",
+    var == "emdat_disasters_total" ~ "Humanitarian crisis count",
+    var == "emdat_deaths_total" ~ "Humanitarian crisis deaths (log)",
+    var == "ged_major" ~ "Civil war",
+    var == "atop_us_nonagg" ~ "Non-agression pact: US",
+    var == "atop_cn_nonagg" ~ "Non-agression pact: CN",
+    var == "vdem" ~ "Democracy"
+    )) %>% 
+  relocate(Source,  .before = 1) %>% 
+  relocate(Measure, .after = Source) 
+```
+
+##### Health - General
+
+```{r}
+#| echo:    false
+
+y %>% 
+  filter(!str_detect(Measure, "Military"), vtype == "outcome") %>% 
+  select(-vtype, -var) %>% 
+  
+  kbl(., caption = "Health - General: Summary statistics", digits = 3) %>% 
+    collapse_rows(kable_input = ., 
+                  columns     = 1,
+                  valign      = "middle") %>% 
+    footnote(kable_input = .,
+           general = paste0(
+             "USD measures reflect 2017 constant millions USD.\n",
+             "Data source: IHME DAH project."
+           )) 
+```
+
+##### Health - Military
+
+```{r}
+#| eval: false
+
+table("CN" = d$mil_health_cn, "US" = d$mil_health_us) %>% 
+  apply(., 1, function(x){x / sum(x)}) %>%
+  t %>% round(., 2)
+```
+
+```{r}
+#| echo:    false
+
+y %>% filter(str_detect(Measure, "Military"), vtype == "outcome") %>% 
+  select(-vtype, -var) %>% 
+
+  kbl(., caption = "Health - Military: Summary statistics", digits = 3) %>% 
+    collapse_rows(kable_input = ., 
+                  columns     = 1,
+                  valign      = "middle") %>% 
+    footnote(kable_input = .,
+           general = paste0(
+             "Data sources: US - USAID, CN - AidData."
+           ),
+           threeparttable = TRUE) 
+```
+
+{{< pagebreak >}}
+
+### Health outcomes (no Iraq)
+
+Note - main model results are robust to data including or excluding Iraq. Many of the 298 Iraq projects in top-reported year (XXXX) are Commander's Emergency Response Program allocations.
+
+```{r}
+#| echo:    false
+
+y2 <- d %>% 
+  
+  filter(cname != "Iraq") %>% 
+  
+  st_drop_geometry %>% 
+  select(dah_us, dah_us_per, 
+         dah_cn, dah_cn_per,
+         
+         mil_health_us_count, mil_health_us, 
+         mil_health_cn_count, mil_health_cn,
+         
+         cdist_us, un_gdppc, un_lifeexpec_yrs, un_infdeath_p1000, 
+         ghdx_cmd_prevalence_pc, ghdx_ncd_prevalence_pc, 
+         emdat_disasters_total, emdat_deaths_total, 
+         ged_major, 
+         atop_us_nonagg, atop_cn_nonagg, 
+         vdem
+         ) %>% 
+  
+  mutate(across(.cols = c(dah_us, dah_cn), 
+                .fns  = ~(.x / 1e6))) %>% 
+  
+  summarize(across(.cols = everything(), 
+                   .fns  = list("Mean"   = ~mean(.x,   na.rm = TRUE),
+                                "Median" = ~median(.x, na.rm = TRUE),
+                                "SD"     = ~sd(.x,     na.rm = TRUE),
+                                "Min"    = ~min(.x,    na.rm = TRUE),
+                                "Max"    = ~max(.x,    na.rm = TRUE),
+                                "N"      = ~n()),
+                   .names= "{.col}.{.fn}"))
+
+y2 <- y2 %>% 
+  pivot_longer(data = ., 
+               cols    = everything(),
+               names_to = c("var", "stat"), 
+               names_sep = "[.]", 
+               values_to = "val")
+
+y2 <- y2 %>% 
+  pivot_wider(., 
+              id_cols = var, 
+              names_from = stat, 
+              values_from = val) %>% 
+  mutate(vtype = case_when(
+    str_starts(var, "dah|mil") ~ "outcome", 
+    TRUE ~ "control"
+  ))
+
+y2 <- y2 %>% 
+  mutate(Source = case_when(
+    str_detect(var, "_cn") ~ "China",
+    str_detect(var, "_us") ~ "United States"
+    )) %>% 
+  mutate(Measure = case_when(
+    var %in% c("dah_us", "dah_cn")         ~ "Health spending (USD)", 
+    var %in% c("dah_us_per", "dah_cn_per") ~ "Health allocation (% budget)",
+    var %in% c("mil_health_us", "mil_health_cn") ~ "Military health (binary)",
+    var %in% c("mil_health_us_count", "mil_health_cn_count") ~ "Military health (projects)",
+    
+    var == "cdist_us" ~ "Distance from US (km, log)",
+    var == "un_gdppc" ~ "GDP per capita (log)",
+    var == "un_lifeexpec_yrs" ~ "Life expectancy (years)",
+    var == "un_infdeath_p1000" ~ "Infant death rate (per 1000 live births, log)",
+    var == "ghdx_cmd_prevalence_pc" ~ "Communicable disease per capita (log)",
+    var == "ghdx_ncd_prevalence_pc" ~ "Non-communicable disease per capita (log)",
+    var == "emdat_disasters_total" ~ "Humanitarian crisis count",
+    var == "emdat_deaths_total" ~ "Humanitarian crisis deaths (log)",
+    var == "ged_major" ~ "Civil war",
+    var == "atop_us_nonagg" ~ "Non-agression pact: US",
+    var == "atop_cn_nonagg" ~ "Non-agression pact: CN",
+    var == "vdem" ~ "Democracy"
+    )) %>% 
+  relocate(Source,  .before = 1) %>% 
+  relocate(Measure, .after = Source) 
+```
+
+##### Health - General (no Iraq)
+
+```{r}
+#| echo:    false
+
+y2 %>% filter(!str_detect(Measure, "Military"), vtype == "outcome") %>% 
+  select(-vtype, -var) %>% 
+
+  kbl(., caption = "Health - General: Summary statistics", digits = 3) %>% 
+    collapse_rows(kable_input = ., 
+                  columns     = 1,
+                  valign      = "middle") %>% 
+    footnote(kable_input = .,
+           general = paste0(
+             "USD measures reflect 2017 constant millions USD.\n",
+             "Data source: IHME DAH project."
+           )) 
+```
+
+##### Health - Military (no Iraq)
+
+```{r}
+#| echo:    false
+
+y2 %>% filter(str_detect(Measure, "Military"), vtype == "outcome") %>% 
+  select(-vtype, -var) %>% 
+
+  kbl(., caption = "Health - Military: Summary statistics", digits = 3) %>% 
+    collapse_rows(kable_input = ., 
+                  columns     = 1,
+                  valign      = "middle") %>% 
+    footnote(kable_input = .,
+           general = paste0(
+             "Data sources: US - USAID, CN - AidData."
+           )) 
+```
+
+{{< pagebreak >}}
+
+### Control variables
+
+```{r}
+y %>% filter(vtype == "control") %>% 
+    select(-vtype, -var, - Source) %>% 
+
+  kbl(., caption = "Control variables: Summary statistics", digits = 3) %>% 
+    collapse_rows(kable_input = ., 
+                  columns     = 1,
+                  valign      = "middle") %>% 
+    footnote(kable_input = .,
+           general = "Data sources:",
+           number  = c("Distance - locally computed in GIS",
+                       "UN Stats: GDP, life expec., infant death", 
+                       "GHDX: Communicable and non-communicable disease prevalence",
+                       "EM-Dat: Humanitarian crises and deaths",
+                       "UCDP GED: Civil war", 
+                       "ATOP: non-aggression pacts",
+                       "VDEM: democracy")) 
+```

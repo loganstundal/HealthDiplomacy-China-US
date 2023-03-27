@@ -1,0 +1,502 @@
+---
+title : "Effects -  General health"
+editor: visual
+date  : "March 11, 2023"
+---
+
+## Purpose
+
+Estimate marginal effects of health aid from temporal models
+
+## Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(spatialreg)
+
+library(texreg)
+library(lmtest)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+d <- read_rds("../../Data/analysis-data/0-analysis_data.rds")
+load("../../Data/analysis-data/2-models_health-general.Rdata")
+load("../../Data/analysis-data/0-spatial_weights.rdata")
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Functions
+# ----------------------------------- #
+source("../Functions/dynamics.R")
+# ----------------------------------- #
+```
+
+```{r}
+# Effect calculation settings
+effset <- list("cred_int90" = c(0.050, 0.500, 0.950),
+               "cred_int95" = c(0.025, 0.500, 0.975),
+               "context"  = c("context_low"  = 0.25, "context_high" = 4.00),
+               "sims"     = 1000)
+
+# Plot theme
+pset <- list(
+  "theme" = theme_light() + theme(legend.position    = "bottom",
+                                  legend.direction   = "horizontal",
+                                  legend.title       = element_blank(),
+                                  panel.grid.major.x = element_blank()),
+  "xlabs" = as.character(sort(unique(d$year))),
+  "cap_context" = sprintf(paste("Context conditional responses defined as: high context %s%% and ",
+                                 "low context %s%% of total health aid budget."), 
+                           effset$context[["context_high"]], effset$context[["context_low"]])
+)
+
+figures <- list()
+```
+
+------------------------------------------------------------------------
+
+## Conditional effects plots
+
+```{r}
+# temporal model
+us <- replicate(n    = effset$sims, 
+                expr = {ceff(m = mods_general$us.complex_full, z = "dah_cn_per", 
+                             vcv = mods_general_robust$us.complex_full)}) 
+us <- apply(us, 1, quantile, probs = effset$cred_int95) %>% 
+  t %>% as_tibble() %>% rename(lb = 1, md = 2, ub = 3) %>% 
+  mutate(z = seq(min(d$dah_cn_per), max(d$dah_cn_per), length.out = 100),
+         m = "US persistence")
+
+cn <- replicate(n    = effset$sims, 
+                expr = {ceff(m = mods_general$cn.complex_full, z = "dah_us_per", 
+                             vcv = mods_general_robust$cn.complex_full)}) 
+cn <- apply(cn, 1, quantile, probs = effset$cred_int95) %>% 
+  t %>% as_tibble() %>% rename(lb = 1, md = 2, ub = 3) %>% 
+  mutate(z = seq(min(d$dah_us_per), max(d$dah_us_per), length.out = 100),
+         m = "CN persistence")
+
+pd <- bind_rows(us, cn)
+
+rm(us, cn)
+```
+
+```{r}
+p1 <- ggplot(data = pd, aes(x = z)) +
+  geom_hline(aes(yintercept = 0), linetype = "dashed", linewidth = 0.4) +
+  geom_ribbon(aes(ymin = lb, ymax = ub, fill = m), alpha = 0.3) +
+  geom_line(aes(y = md, color = m)) +
+  pset$theme +
+  labs(title = "Health aid - temporal persistence",
+       subtitle = "conditionality in response to counterparty investments",
+       y     = "temporal persistence",
+       x     = "Counterparty health aid commitment (% of budget)") 
+  # geom_rug(data = tibble(x = c(d$dah_cn_per, d$dah_us_per)), aes(x = x))
+
+figures[["conditional_effects"]] <- p1
+
+rm(p1)
+```
+
+------------------------------------------------------------------------
+
+## LRSS
+
+### Simple
+
+```{r}
+us <- replicate(n    = effset$sims, 
+                expr = {lrss_time(m       = mods_general$us.simple_full,
+                                  x       = "dah_cn_per",
+                                  phi     = "dah_us_per_lag",
+                                  vcv     = mods_general_robust$us.simple_full)})
+
+cn <- replicate(n    = effset$sims, 
+                expr = {lrss_time(m       = mods_general$cn.simple_full,
+                                  x       = "dah_us_per",
+                                  phi     = "dah_cn_per_lag",
+                                  vcv     = mods_general_robust$cn.simple_full)})
+
+lrss_time_simple <- list("US" = us, "CN" = cn)
+
+lrss_time_simple <- lapply(lrss_time_simple, quantile, probs = effset$cred_int90) %>%
+  bind_rows(., .id = "model") %>%
+  rename(lb = 2, md = 3, ub = 4)
+
+rm(us, cn)
+```
+
+### Complex
+
+```{r}
+us <- lapply(effset$context, function(x){
+  replicate(n    = effset$sims,
+            expr = {lrss_time(m       = mods_general$us.complex_full,
+                              x       = "dah_cn_per",
+                              phi     = "dah_us_per_lag",
+                              context = x,
+                              vcv     = mods_general_robust$us.complex_full)})
+})
+
+cn <- lapply(effset$context, function(x){
+  replicate(n    = effset$sims,
+            expr = {lrss_time(m       = mods_general$cn.complex_full,
+                              x       = "dah_us_per",
+                              phi     = "dah_cn_per_lag",
+                              context = x,
+                              vcv     = mods_general_robust$cn.complex_full)})
+})
+
+lrss_time_complex <- c("US" = us, "CN" = cn)
+
+lrss_time_complex <- lapply(lrss_time_complex, quantile, probs = effset$cred_int90) %>%
+  bind_rows(., .id = "model") %>%
+  rename(lb = 2, md = 3, ub = 4) %>%
+  separate_wider_delim(., cols = model, delim = ".",
+                       names = c("model", "context"))
+
+rm(us, cn)
+```
+
+### Spacetime
+
+```{r}
+us <- lapply(effset$context, function(x){
+  replicate(n = effset$sims,
+            expr = {lrss_star(m       = mods_general$us.complex_star,
+                              x       = "dah_cn_per",
+                              phi     = "dah_us_per_lag",
+                              context = x,
+                              ev_w    = d_spatial$ev_knn,
+                              ev_l    = d_spatial$ev_lmt,
+                              sim_se  = TRUE)},
+            simplify = F) %>%
+    bind_rows() %>%
+    reframe(across(.cols = everything(),
+                   .fns  = ~quantile(.x, probs = effset$cred_int90))) %>%
+    t %>%
+    as.data.frame %>%
+    rename(lb = 1, md = 2, ub = 3) %>%
+    rownames_to_column(., var = "effect")
+}) %>%
+  bind_rows(., .id = "context") %>% 
+  mutate(model = "us")
+
+cn <- lapply(effset$context, function(x){
+  replicate(n = effset$sims,
+            expr = {lrss_star(m       = mods_general$cn.complex_star,
+                              x       = "dah_us_per",
+                              phi     = "dah_cn_per_lag",
+                              context = x,
+                              ev_w    = d_spatial$ev_knn,
+                              ev_l    = d_spatial$ev_lmt,
+                              sim_se  = TRUE)},
+            simplify = F) %>%
+    bind_rows() %>%
+    reframe(across(.cols = everything(),
+                   .fns  = ~quantile(.x, probs = effset$cred_int90))) %>%
+    t %>%
+    as.data.frame %>%
+    rename(lb = 1, md = 2, ub = 3) %>%
+    rownames_to_column(., var = "effect")
+}) %>%
+  bind_rows(., .id = "context") %>% 
+  mutate(model = "cn")
+
+lrss_star_complex <- bind_rows(us, cn)
+
+rm(us, cn)
+```
+
+### Clean-up
+
+```{r}
+lrss_estimates <- list(
+  "simple"  = lrss_time_simple,
+  "complex" = lrss_time_complex, 
+  "star"    = lrss_star_complex
+)
+
+rm(lrss_time_simple, lrss_time_complex, lrss_star_complex, lrss_time, lrss_star)
+```
+
+------------------------------------------------------------------------
+
+## Marginal responses
+
+### Simple
+
+```{r}
+us <- replicate(n    = effset$sims,
+                expr = {mr_time(m   = mods_general$us.simple_full,
+                                x   = "dah_cn_per",
+                                phi = "dah_us_per_lag",
+                                vcv = mods_general_robust$us.simple_full,
+                                cumulative = FALSE)})
+us <- apply(us, 1, quantile, probs = effset$cred_int90) %>% t %>% 
+    as_tibble %>%
+    rename(lb = 1, md = 2, ub = 3) %>%
+    mutate(x = 1:n(), model = "US")
+
+cn <- replicate(n    = effset$sims,
+                expr = {mr_time(m   = mods_general$cn.simple_full,
+                                x   = "dah_us_per",
+                                phi = "dah_cn_per_lag",
+                                vcv = mods_general_robust$cn.simple_full,
+                                cumulative = FALSE)})
+cn <- apply(cn, 1, quantile, probs = effset$cred_int90) %>% t %>% 
+    as_tibble %>%
+    rename(lb = 1, md = 2, ub = 3) %>%
+    mutate(x = 1:n(), model = "CN")  
+
+mr_time_simple <- bind_rows(us, cn)
+
+rm(us, cn)
+```
+
+### Complex
+
+```{r}
+us <- lapply(effset$context, function(x){
+  tmp <- replicate(n    = effset$sims,
+                   expr = {mr_time(m          = mods_general$us.complex_full,
+                                   x          = "dah_cn_per",
+                                   phi        = "dah_us_per_lag",
+                                   context    = x,
+                                   cumulative = TRUE,
+                                   steps      = 0:12,
+                                   vcv        = mods_general_robust$us.complex_full)}) %>%
+    apply(., 1, quantile, probs = effset$cred_int90) %>% t %>%
+    as_tibble %>%
+    rename(lb = 1, md = 2, ub = 3) %>%
+    mutate(x = 1:n())
+  return(tmp)
+}) %>% bind_rows(., .id = "context") %>% 
+  mutate(model = "US")
+
+cn <- lapply(effset$context, function(x){
+  tmp <- replicate(n    = effset$sims,
+                   expr = {mr_time(m          = mods_general$cn.complex_full,
+                                   x          = "dah_us_per",
+                                   phi        = "dah_cn_per_lag",
+                                   context    = x,
+                                   cumulative = TRUE,
+                                   steps      = 0:12,
+                                   vcv        = mods_general_robust$cn.complex_full)}) %>%
+    apply(., 1, quantile, probs = effset$cred_int90) %>% t %>%
+    as_tibble %>%
+    rename(lb = 1, md = 2, ub = 3) %>%
+    mutate(x = 1:n())
+  return(tmp)
+}) %>% bind_rows(., .id = "context") %>% 
+  mutate(model = "CN")
+
+mr_time_complex <- bind_rows(us, cn) %>% 
+  mutate(context = str_to_sentence(str_extract(context, "high|low")))
+
+rm(us, cn)
+```
+
+```{r}
+p2 <- ggplot(data = mr_time_complex, aes(x = x, color = context)) +
+  geom_line(aes(y = lb), linetype = "dashed") +
+  geom_line(aes(y = ub), linetype = "dashed") +
+  geom_line(aes(y = md, color = context)) +
+  facet_wrap(~model, ncol = 2, scales = "free_y") + 
+  pset$theme + theme(axis.title.x = element_blank()) +
+  scale_x_continuous(breaks = seq(1, 11, 2),
+                     labels = pset$xlabs[1:max(mr_time_complex$x)][seq(1, 11, 2)]) +
+  labs(title = "Cumulative response - temporal dynamics",
+       subtitle = "Full response to 1-unit change in counterparty health allocation",
+       y        = "Change in health aid allocation (% budget)",
+       caption  = pset$cap_context)
+
+figures[["cumulative_response_time_complex"]] <- p2
+
+rm(p2)
+```
+
+### Spacetime
+
+```{r}
+us <- lapply(effset$context, function(x){
+  tmp <- replicate(n    = effset$sims, 
+                   expr = {mr_star_ev(m       = mods_general$us.complex_star,
+                                      x       = "dah_cn_per",
+                                      phi     = "dah_us_per_lag",
+                                      context = x,
+                                      evw     = d_spatial$ev_knn,
+                                      evl     = d_spatial$ev_lmt,
+                                      sim_se  = TRUE,
+                                      t_units = length(unique(d$year)),
+                                      t1obs   = table(d$year)[[1]],
+                                      cumulative = TRUE) %>%
+                       pull(total)})
+  
+  tmp <- apply(tmp, 1, quantile, probs = effset$cred_int95) %>% t %>% 
+    as_tibble %>% 
+    rename(lb = 1, md = 2, ub = 3) %>% 
+    mutate(x = 1:n())
+  return(tmp)
+}) %>% bind_rows(., .id = "context") %>% 
+  mutate(model = "US")
+
+cn <- lapply(effset$context, function(x){
+  tmp <- replicate(n    = effset$sims, 
+                   expr = {mr_star_ev(m       = mods_general$cn.complex_star,
+                                      x       = "dah_us_per",
+                                      phi     = "dah_cn_per_lag",
+                                      context = x,
+                                      evw     = d_spatial$ev_knn,
+                                      evl     = d_spatial$ev_lmt,
+                                      sim_se  = TRUE,
+                                      t_units = length(unique(d$year)),
+                                      t1obs   = table(d$year)[[1]],
+                                      cumulative = TRUE) %>%
+                       pull(total)})
+  
+  tmp <- apply(tmp, 1, quantile, probs = effset$cred_int95) %>% t %>% 
+    as_tibble %>% 
+    rename(lb = 1, md = 2, ub = 3) %>% 
+    mutate(x = 1:n())
+  return(tmp)
+}) %>% bind_rows(., .id = "context") %>% 
+  mutate(model = "CN")
+
+mr_star_complex <- bind_rows(us, cn) %>% 
+  mutate(context = str_to_sentence(str_extract(context, "high|low")))
+
+rm(us, cn)
+```
+
+```{r}
+p3 <- ggplot(data = mr_star_complex, aes(x = x, color = context)) +
+  geom_line(aes(y = lb), linetype = "dashed") +
+  geom_line(aes(y = ub), linetype = "dashed") +
+  geom_line(aes(y = md, color = context)) +
+  facet_wrap(~model, ncol = 2, scales = "free_y") + 
+  pset$theme + theme(axis.title.x = element_blank()) +
+  scale_x_continuous(breaks = seq(1, 11, 2),
+                     labels = pset$xlabs[1:max(mr_time_complex$x)][seq(1, 11, 2)]) +
+  labs(title = "Cumulative response - spatiotemporal dynamics",
+       subtitle = "Full response to 1-unit change in counterparty health allocation",
+       y        = "Change in health aid allocation (% budget)",
+       caption  = pset$cap_context)
+
+figures[["cumulative_response_star_complex"]] <- p3
+
+rm(p3)
+```
+
+```{r}
+mr_both_complex <- bind_rows(mr_time_complex %>% mutate(eff = "Temporal"), 
+                             mr_star_complex %>% mutate(eff = "Spatiotemporal"))
+
+p4 <- ggplot(data = mr_both_complex, aes(x = x, color = context)) +
+  geom_line(aes(y = lb), linetype = "dashed") +
+  geom_line(aes(y = ub), linetype = "dashed") +
+  geom_line(aes(y = md, color = context)) +
+  facet_wrap(~eff+model, ncol = 2, scales = "free_y") + 
+  pset$theme + theme(axis.title.x = element_blank()) +
+  scale_x_continuous(breaks = seq(1, 11, 2),
+                     labels = pset$xlabs[1:max(mr_time_complex$x)][seq(1, 11, 2)]) +
+  labs(title = "Cumulative response - spatiotemporal and temporal dynamics compared",
+       subtitle = "Full response to 1-unit change in counterparty health allocation",
+       y        = "Change in health aid allocation (% budget)",
+       caption  = pset$cap_context)
+
+figures[["cumulative_response_startime_complex"]] <- p4
+
+rm(p4)
+```
+
+### Clean-up
+
+```{r}
+mr_estimates <- list(
+  "simple"  = mr_time_simple,
+  "complex" = mr_time_complex, 
+  "star"    = mr_star_complex
+)
+
+rm(mr_time_simple, mr_time_complex, mr_star_complex, mr_time, mr_star, mr_star_ev)
+```
+
+------------------------------------------------------------------------
+
+## Half life decay
+
+```{r}
+us <- lapply(effset$context, function(x){
+  tmp <- replicate(n    = effset$sims, 
+                   expr = {half_life(m   = mods_general$us.complex_full, 
+                                     x   = "dah_cn_per", 
+                                     phi = "dah_us_per_lag",
+                                     decay = 0.5,
+                                     vcv = mods_general_robust$us.complex_full,
+                                     context = x)}) 
+  
+  tmp <- quantile(tmp, probs = effset$cred_int90)
+  return(tmp)
+}) %>%
+  bind_rows(., .id = "context") %>% 
+  rename(lb = 2, md = 3, ub = 4) %>% 
+  mutate(model = "us")
+
+cn <- lapply(effset$context, function(x){
+  tmp <- replicate(n    = effset$sims, 
+                   expr = {half_life(m   = mods_general$cn.complex_full, 
+                                     x   = "dah_us_per", 
+                                     phi = "dah_cn_per_lag",
+                                     decay = 0.5,
+                                     vcv = mods_general_robust$cn.complex_full,
+                                     context = x)}) 
+  
+  tmp <- quantile(tmp, probs = effset$cred_int90, na.rm = T)
+  return(tmp)
+}) %>% 
+  bind_rows(., .id = "context") %>% 
+  rename(lb = 2, md = 3, ub = 4) %>% 
+  mutate(model = "cn")
+
+halflife <- bind_rows(us, cn)
+
+rm(us, cn, half_life)
+```
+
+------------------------------------------------------------------------
+
+## Effect estimates list
+
+```{r}
+dynamics <- list(
+  "lrss"             = lrss_estimates,
+  "marginal_effects" = mr_estimates,
+  "halflife"         = halflife
+)
+
+rm(lrss_estimates, mr_estimates, halflife)
+```
+
+## Save
+
+```{r}
+save(dynamics, figures, 
+     file = "../../Data/analysis-data/4-effects-health_general.Rdata")
+
+rm(list = ls())
+```
+

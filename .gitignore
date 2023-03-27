@@ -2,9 +2,19 @@
 .Rhistory
 .RData
 .Ruserdata
-Data/
-Scripts/Old-Scripts
 
+
+
+Data/
+Documents/
 Drafts/
 Meeting-Notes/
 Results/
+
+Scripts/old_scripts-to-delete-20230304
+Scripts/Tidy/to-delete-20230301
+Scripts/Analysis/to-delete-20230306
+tmp-*
+tmp-*/
+
+Talks/
