@@ -86,7 +86,7 @@ rm(us, cn)
 ### Robust SEs
 
 ```{r}
-mods_military_robust <- lapply(mods_military, vcovPC, cluster = ~ccode + year, pariwise = F)
+mods_military_robust <- lapply(mods_military, vcovCL, cluster = ~region)
 ```
 
 ## Save
