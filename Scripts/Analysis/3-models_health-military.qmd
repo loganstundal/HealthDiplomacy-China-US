@@ -40,40 +40,9 @@ d <- read_rds("../../Data/analysis-data/0-analysis_data.rds")
 
 ## Military health
 
-### Create knots
-
-```{r}
-d <- d %>%
-  st_drop_geometry %>%
-  arrange(ccode, year) %>%
-  group_by(ccode) %>%
-  mutate(change = mil_health_us != mil_health_us_lag) %>%
-  mutate(poly1 = sequence(table(cumsum(change) + 1)),
-         poly2 = poly1^2,
-         poly3 = poly1^3)
-```
-
 ### Formula
 
 ```{r}
-# fs <- list(
-#   "f1" = . ~ poly1 + poly2 + poly3 + region,
-#   "f2" = . ~ 
-#     # cdist_us +
-#     un_gdppc +
-#     un_gdppc2 +
-#     un_lifeexpec_yrs +
-#     # un_lifeexpec_yrs2 +
-#     un_infdeath_p1000 +
-#     ghdx_ncd_prevalence_pc + ghdx_cmd_prevalence_pc +
-#     emdat_disasters_total + emdat_deaths_total +
-#     ged_major +
-#     atop_nonagg +
-#     vdem + I(vdem^2) +
-#     poly1 + poly2 + poly3 + 
-#     region
-# )
-
 base    <-  . ~ poly1 + poly2 + poly3 + region
 full    <-  update(base, ~ . + un_gdppc + un_gdppc2 + 
                      un_lifeexpec_yrs + un_lifeexpec_yrs2 + un_infdeath_p1000 + 
@@ -117,37 +86,8 @@ rm(us, cn)
 ### Robust SEs
 
 ```{r}
-mods_military_robust <- lapply(mods_military, function(x){
-  vcv <- vcovPC(x = x, cluster = ~ ccode + year, pairwise = F)
-  # vcv <- vcovCL(x = x, cluster = ~ ccode + year)
-  # vcv <- vcovHC(x = x, type = "HC0")
-  # mrb <- coeftest(x = x, vcov. = vcv)
-  return(vcv)
-})
+mods_military_robust <- lapply(mods_military, vcovPC, cluster = ~ccode + year, pariwise = F)
 ```
-
-```{r}
-# nmod <- length(mods_military)
-# mm <- lapply(names(mods_military), function(x){return(
-#   coeftest(x = mods_military[[x]], 
-#            vcov. = mods_military_robust[[x]])
-# )})
-# screenreg(mm,
-#           digits = 3,
-#           # custom.coef.map = var_names,
-#           custom.header = list("US" = 1:(nmod/2), "CN" = ((nmod/2)+1):nmod),
-#           stars = c(0.001, 0.01, 0.05, 0.1),
-#           omit.coef = "year|region|cname|ccode",
-# 
-#           custom.gof.rows = mods_military_gof
-# 
-#           # custom.note = cnote
-#           )
-# 
-# rm(nmod, mm)
-```
-
-------------------------------------------------------------------------
 
 ## Save
 
@@ -222,3 +162,7 @@ Concerning military model fit:
     -   NOTE - not robust to inclusion of year FE - but probably overkill with time poly.
 
     -   Plus - based on error appears separation occurs with year FE.
+
+### Multinomial analysis
+
+Analysis using `mil_health_qual` variable.
