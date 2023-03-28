@@ -43,7 +43,7 @@ d <- read_rds("../../Data/analysis-data/0-analysis_data.rds")
 ### Formula
 
 ```{r}
-base    <-  . ~ poly1 + poly2 + poly3 + region
+base    <-  . ~ poly1 + poly2 + poly3 + region 
 full    <-  update(base, ~ . + un_gdppc + un_gdppc2 + 
                      un_lifeexpec_yrs + un_lifeexpec_yrs2 + un_infdeath_p1000 + 
                      ghdx_ncd_prevalence_pc + ghdx_cmd_prevalence_pc + 
@@ -86,7 +86,7 @@ rm(us, cn)
 ### Robust SEs
 
 ```{r}
-mods_military_robust <- lapply(mods_military, vcovCL, cluster = ~region)
+mods_military_robust <- lapply(mods_military, vcovPC, cluster = ~ ccode)
 ```
 
 ## Save
