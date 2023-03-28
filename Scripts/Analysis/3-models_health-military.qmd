@@ -40,10 +40,9 @@ d <- read_rds("../../Data/analysis-data/0-analysis_data.rds")
 
 ## Military health
 
-```{r}
+### Create knots
 
-# COMMENTED OUT IS LIKELY COORRECT WAY
-# In case I messed up the polynomial.
+```{r}
 d <- d %>%
   st_drop_geometry %>%
   arrange(ccode, year) %>%
@@ -52,16 +51,6 @@ d <- d %>%
   mutate(poly1 = sequence(table(cumsum(change) + 1)),
          poly2 = poly1^2,
          poly3 = poly1^3)
-```
-
-```{r}
-# d <- d %>%
-#   arrange(as.numeric(ccode), as.numeric(year)) %>% 
-#   group_by(ccode) %>% 
-#   mutate(poly1 = 1:n(),
-#          poly2 = poly1^2,
-#          poly3 = poly1^3) %>% 
-#   ungroup
 ```
 
 ### Formula
@@ -122,13 +111,8 @@ mods_military_gof <- list(
   "Log Likelihood" = lapply(mods_military, function(x) round(logLik(x) %>% as.numeric(), 2))
 )
 
-# rm(us, cn)
+rm(us, cn)
 ```
-
-## DYNAMIC EFFECTS PER CARTER AND SIGNORINO
-
--   NOTE -- figure out which spline is right ! Read the paper - the two splines I have are producing distinct curves.
--   SEE `tmp-probit-dynamics.R`
 
 ### Robust SEs
 
@@ -142,100 +126,33 @@ mods_military_robust <- lapply(mods_military, function(x){
 })
 ```
 
-### Table
-
 ```{r}
-nmod <- length(mods_military)
-mm <- lapply(names(mods_military), function(x){return(
-  coeftest(x = mods_military[[x]], 
-           vcov. = mods_military_robust[[x]])
-)})
-screenreg(mm,
-          digits = 3,
-          # custom.coef.map = var_names,
-          custom.header = list("US" = 1:(nmod/2), "CN" = ((nmod/2)+1):nmod),
-          stars = c(0.001, 0.01, 0.05, 0.1),
-          omit.coef = "year|region|cname|ccode",
-
-          custom.gof.rows = mods_military_gof
-
-          # custom.note = cnote
-          )
+# nmod <- length(mods_military)
+# mm <- lapply(names(mods_military), function(x){return(
+#   coeftest(x = mods_military[[x]], 
+#            vcov. = mods_military_robust[[x]])
+# )})
+# screenreg(mm,
+#           digits = 3,
+#           # custom.coef.map = var_names,
+#           custom.header = list("US" = 1:(nmod/2), "CN" = ((nmod/2)+1):nmod),
+#           stars = c(0.001, 0.01, 0.05, 0.1),
+#           omit.coef = "year|region|cname|ccode",
+# 
+#           custom.gof.rows = mods_military_gof
+# 
+#           # custom.note = cnote
+#           )
+# 
+# rm(nmod, mm)
 ```
 
 ------------------------------------------------------------------------
 
-# \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_
-
-## Quantities of interest
-
-### Military probabilities
+## Save
 
 ```{r}
-p_cn_on_us <- margins(model     = mods_military$us_full, 
-                      variables = "mil_health_cn", type = "response",
-                      vcov      = mods_military_robust$us_base)
-p_us_on_cn <- margins(model     = mods_military$cn_full, 
-                      variables = "mil_health_us", type = "response",
-                      vcov      = mods_military_robust$cn_full)
-```
-
-```{r}
-p_cn_on_us <- summary(p_cn_on_us, level = 0.9) %>% as_tibble
-p_us_on_cn <- summary(p_us_on_cn, level = 0.9) %>% as_tibble
-
-mods_military_qoi <- bind_rows(p_cn_on_us, p_us_on_cn) %>% 
-  dplyr::select(factor, AME, lower, upper) %>% 
-  mutate(across(.cols = !factor, .fns = ~(.x * 100))) %>% 
-  mutate(
-    x    = c(1, 1.5),
-    xlab = c("US", "CN"),
-    clab = c("CN military presence", "US military health presence")
-  )
-```
-
-```{r}
-mil_probs <- ggplot(mods_military_qoi, aes(x = x)) +
-  geom_errorbar(aes(ymin = lower, ymax = upper, color = clab),
-                width = 0.1) +
-  geom_point(aes(y = AME, color = clab)) +
-  geom_hline(aes(yintercept = 0), color = "black", linewidth = 0.3) +
-  theme(
-    panel.background   = element_rect(fill = NA, color = "black"),
-    panel.grid.major.y = element_line(color= "gray80", linetype = "dotted", linewidth = 0.25),
-    axis.title.x       = element_blank(),
-    legend.position    = "bottom"
-  ) + 
-  scale_x_continuous(breaks = mods_military_qoi$x, labels = mods_military_qoi$xlab) + 
-  # lims(x = c(0.75, 1.75), y = c(-1, 15)) + 
-  # coord_fixed(ratio = .1, xlim = c(0.75, 1.75), ylim = c(-1, 15), expand = T) +
-  guides(color = guide_legend(title = "Effect of:", nrow = 2, title.position = "top")) + 
-  labs(
-    title = "Predicted probability of military health presense",
-    subtitle = "in response to military health presenece of other power")
-
-# ggsave(plot = mil_probs, 
-#        filename = "../../Results/Figures/3-health_military-probabilities.png",
-#        device = "png",
-#        width    = 5.0,
-#        height   = 5.0, 
-#        units    = "in")
-
-png(filename = "../../Results/Figures/3-health_military-probabilities.png",
-    width    = 5, 
-    height   = 5,
-    units    = "in",
-    res      = 360)
-mil_probs
-dev.off()
-
-rm(mil_probs)
-```
-
-### Save
-
-```{r}
-save(mods_military, mods_military_gof, mods_military_qoi, 
+save(mods_military, mods_military_gof, mods_military_robust, 
      file = "../../Data/analysis-data/3-models_health-military.Rdata")
 
 # rm(list = ls())
@@ -262,7 +179,7 @@ dsub <- d %>%
   filter(tgt == 1) %>%
   pull(cname)
 
-d2 <- d %>%
+dsub <- d %>%
   filter(cname %in% dsub)
 ```
 
