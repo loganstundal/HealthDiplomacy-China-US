@@ -16,6 +16,9 @@ theme_coef <- function(no_legend = FALSE){
     panel.grid.major.x = element_line(color     = "gray80",
                                       linetype  = "dotted",
                                       linewidth = 0.25),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.ticks         = element_blank(),
     axis.title.x       = element_blank(),
     legend.position    = "bottom"
   )
