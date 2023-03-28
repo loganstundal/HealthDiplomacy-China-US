@@ -87,10 +87,11 @@ d <- d %>%
     un_gdppc2              = un_gdppc^2,
     un_lifeexpec_yrs2      = un_lifeexpec_yrs^2,
     un_infdeath_p1000      = log(un_infdeath_p1000),
-    ghdx_ncd_prevalence_pc = log(ghdx_ncd_prevalence / un_pop),
-    ghdx_cmd_prevalence_pc = log(ghdx_cmd_prevalence / un_pop),
-    emdat_deaths_total     = log((emdat_deaths_total / un_pop) + 1),
+    ghdx_ncd_prevalence_pc = (ghdx_ncd_prevalence / un_pop),
+    ghdx_cmd_prevalence_pc = (ghdx_cmd_prevalence / un_pop),
+    emdat_deaths_total     = (emdat_deaths_total / un_pop),
     ged_major              = ifelse(ged_deaths_battle>1e3, 1, 0),
+    vdem                   = vdem * 100,
     vdem2                  = vdem^2,
     trade_chn_gdp          = (trade_chn / un_gdp) * 100,
     trade_usa_gdp          = (trade_usa / un_gdp) * 100,
@@ -159,7 +160,8 @@ d <- d %>%
   mutate(poly1 = sequence(table(cumsum(change) + 1)),
          poly2 = poly1^2,
          poly3 = poly1^3) %>% 
-  relocate(contains("poly"), geometry, .after = last_col())
+  relocate(contains("poly"), geometry, .after = last_col()) %>% 
+  select(-change)
 ```
 
 ## Spacetime objects
