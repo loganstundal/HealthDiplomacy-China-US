@@ -39,11 +39,11 @@ d <- read_rds("../../Data/tidy-data/9-hd-20230326.rds")
 
 Calculate all transformations of variables used in analysis.
 
+Rename variables and create military health indicators.
+
 ```{r}
 d <- d %>% 
-  filter(year %in% as.character(2002:2017)) %>% 
   arrange(as.numeric(ccode), as.numeric(year)) %>% 
-  
   rename(mil_health_us_count = usaid_projects_mil, 
          mil_health_cn_count = aiddata_projects_mil) %>% 
   mutate(
@@ -53,14 +53,18 @@ d <- d %>%
     across(.cols = c(atop_us_nonagg, atop_cn_nonagg), 
            .fns  = ~as.numeric(as.character(.x)))
     ) %>%
-  
   mutate(mil_health_qual = case_when(
     (mil_health_us & mil_health_cn)   ~ "Both",
     (!mil_health_us & !mil_health_cn) ~ "Neither",
     (!mil_health_us & mil_health_cn)  ~ "CN",
     (mil_health_us & !mil_health_cn)  ~ "US"
-  )) %>% 
-  
+  )) 
+```
+
+Create time lags.
+
+```{r}
+d <- d %>% 
   group_by(ccode) %>% 
   mutate(across(.cols = c(dah_us_per, dah_cn_per),
                 .fns  = ~lag(.x, n = 1),
@@ -68,11 +72,14 @@ d <- d %>%
          
          across(.cols = c(mil_health_us, mil_health_cn),
                 .fns  = ~lag(.x, n = 1),
-                .names= "{.col}_lag"),
-         
-         poly1 = 1:n()) %>% 
-  ungroup %>% 
-  
+                .names= "{.col}_lag")) %>% 
+  ungroup
+```
+
+Create independent variable operationalizations for modeling.
+
+```{r}
+d <- d %>%   
   mutate(
     cdist_us               = log(cdist_us),
     cdist_cn               = log(cdist_cn),
@@ -85,23 +92,20 @@ d <- d %>%
     emdat_deaths_total     = log((emdat_deaths_total / un_pop) + 1),
     ged_major              = ifelse(ged_deaths_battle>1e3, 1, 0),
     vdem2                  = vdem^2,
-    
-    trade_chn_gdp = (trade_chn / un_gdp) * 100,
-    trade_usa_gdp = (trade_usa / un_gdp) * 100,
-    trade_net     = trade_usa_gdp - trade_chn_gdp,
-
-    poly2 = poly1^2,
-    poly3 = poly1^3
-  ) %>% 
-  
+    trade_chn_gdp          = (trade_chn / un_gdp) * 100,
+    trade_usa_gdp          = (trade_usa / un_gdp) * 100,
+    trade_net              = trade_usa_gdp - trade_chn_gdp) %>% 
   group_by(year) %>% 
   mutate(
     emdat_disasters_peryr = (emdat_disasters_total / sum(emdat_disasters_total) )* 100
   ) %>% 
-  
-  ungroup %>% 
-  
-  
+  ungroup 
+```
+
+Select relevant variables, drop missing values and sort by country and year indices.
+
+```{r}
+d <- d %>% 
   select(cname, ccode, year, region,
          
          carea_sqkm, cdist_us, cdist_cn,
@@ -122,19 +126,11 @@ d <- d %>%
          trade_chn_gdp, trade_usa_gdp, trade_net,
          ghdx_ncd_prevalence_pc, ghdx_cmd_prevalence_pc,
          emdat_disasters_total, emdat_deaths_total, emdat_disasters_peryr,
-         ged_major, atop_nonagg, atop_us_nonagg, atop_cn_nonagg, vdem, vdem2, 
-         poly1, poly2, poly3) %>% 
-  # drop_na() %>% 
+         ged_major, atop_nonagg, atop_us_nonagg, atop_cn_nonagg, vdem, vdem2) %>% 
   select(all_of(c("cname", "ccode", "year", "region", "carea_sqkm", "cdist_us", "cdist_cn")), 
-         sort(colnames(.))) %>% 
-  relocate(contains("poly"), geometry, .after = last_col())
+         sort(colnames(.))) 
 
-# Note - in USAID data 0 instances of US military health reported 2000:2003, 3 in 2004
-#        and 40 in 2005. So, subsetting model data starting 2005.
-#        This will apply to all models for maximum comparability.
-d <- d %>% filter(year >= 2005)
-
-# Drop NA values on variables used in all models (note - these 3 suffice to
+# Drop NA values on variables used in all models (note - these 4 suffice to
 # drop NAs across all model vars)
 d <- d %>% drop_na(vdem, un_lifeexpec_yrs, un_gdppc, mil_health_us_lag)
 
@@ -142,12 +138,28 @@ d <- d %>% drop_na(vdem, un_lifeexpec_yrs, un_gdppc, mil_health_us_lag)
 d <- d %>% arrange(as.numeric(year), as.numeric(ccode))
 ```
 
-### Drop outliers
+### Drop outliers and post-2004
+
+-   USAID data report 0 instances of US military health in 2000:2003, 3 in 2004 and 40 in 2005. Subsetting model data beginning 2005. This applies to all models for comparability.
 
 ```{r}
 d <- d %>%   
-  filter(dah_us_per <= 10) %>%  
-  filter(dah_cn_per <= 10)
+  filter(dah_us_per <= 10,
+         dah_cn_per <= 10,
+         year       >= 2005)   
+```
+
+### Cubic polynomials for probits
+
+```{r}
+d <- d %>%
+  arrange(as.numeric(ccode), as.numeric(year)) %>%
+  group_by(ccode) %>%
+  mutate(change = mil_health_us != mil_health_us_lag) %>%
+  mutate(poly1 = sequence(table(cumsum(change) + 1)),
+         poly2 = poly1^2,
+         poly3 = poly1^3) %>% 
+  relocate(contains("poly"), geometry, .after = last_col())
 ```
 
 ## Spacetime objects
@@ -215,9 +227,12 @@ w_dst <- reduce(w_dst, .f = magic::adiag)
 ### Spatial time lag matrix
 
 ```{r}
+#| message: false # suppress attachment notice
 source("../../Scripts/Functions/panel_L.R")
 
 l_lag <- panel_l(data = d, id_unit = "ccode", id_time = "year")
+
+rm(panel_l)
 ```
 
 ### List Ws, Eigenvalues, RS matrics
@@ -267,3 +282,4 @@ save(d_spatial,
 
 rm(list = ls())
 ```
+
