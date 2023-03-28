@@ -134,10 +134,7 @@ mods_general_gof <- list(
 ```
 
 ```{r}
-mods_general_robust <- lapply(mods_general, function(x){
-  vcv <- vcovPC(x = x, cluster = ~ ccode + year, pairwise = F)
-  return(vcv)
-})
+mods_general_robust <- lapply(mods_general, vcovPC, cluster = ~ ccode + year)
 ```
 
 ## Temporal - complex dynamic robustness
