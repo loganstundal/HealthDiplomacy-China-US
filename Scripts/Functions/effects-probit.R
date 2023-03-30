@@ -62,12 +62,14 @@ probit_dydx <- function(m, xvar,
   }
 
   if(!is.null(x_mat)){
-    x_at <- ifelse(!is.null(dim(x_mat)),
-                   x_mat[, xvar] %>% as.vector,
-                   x_mat[xvar] %>% as.vector)
+    if(is.vector(x_mat)){
+      x_at <- as.vector(x_mat[xvar])
+    } else{
+      x_at <- as.vector(x_mat[,xvar])
+    }
   } else{
-    x_at <- as.vector(x_at)
-    x <- gen_x(m = m, xvar = xvar, x_at = x_at)
+    x_at  <- as.vector(x_at)
+    x_mat <- gen_x(m = m, xvar = xvar, x_at = x_at)
   }
 
   b <- coef(m)
@@ -77,7 +79,7 @@ probit_dydx <- function(m, xvar,
   #        However, inefficient - repeats above x,b,chk steps
   if(!is.null(v)){b <- MASS::mvrnorm(n = 1, mu = b, Sigma = v)}
 
-  xb <- x %*% b
+  xb <- x_mat %*% b
 
   # Calculate xvar coefficient
   if(length(chk)>0){
