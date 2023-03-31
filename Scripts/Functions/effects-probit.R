@@ -13,6 +13,9 @@
 gen_x <- function(m, xvar = xvar, x_at = x_at){
   x <- model.matrix(m)
   x <- apply(x, 2, mean)
+
+  if(!xvar %in% names(x)){stop("xvar not in model")}
+
   x[str_starts(names(x), "region")] <- 0
   x["regionSub-Saharan Africa"]     <- 1
   x[str_starts(names(x), "atop")]   <- 0
@@ -123,4 +126,23 @@ probit_prob <- function(m, xvar, x_at,
   return(pnorm(x_vec %*% b) * 100)
 }
 #-----------------------------------------------------------------------------#
+
+
+#-----------------------------------------------------------------------------#
+# inflection ~ identify inflection point for quadratic terms
+#-----------------------------------------------------------------------------#
+inflection <- function(m, xvar, v = NULL){
+  b <- coef(m)
+  chk <- names(b)[str_detect(names(b), paste0(xvar, "2"))]
+  if(length(chk) == 0){
+    stop("No quadratic term found")
+  }
+  if(!is.null(v)){b <- MASS::mvrnorm(n = 1, mu = b, Sigma = v)}
+  bx <- b[xvar]
+  bx2<- b[chk]
+  return(-bx / (2 * bx2))
+}
+#-----------------------------------------------------------------------------#
+
+
 
