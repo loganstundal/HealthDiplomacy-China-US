@@ -167,6 +167,29 @@ Concerning military model fit:
 
 Analysis using `mil_health_qual` variable.
 
+```{r}
+# library(MNP)
+# d <- read_rds("Data/analysis-data/0-analysis_data.rds") %>% 
+#   st_drop_geometry %>% 
+#   group_by(ccode) %>% 
+#   mutate(across(.cols = c(mil_health_us, mil_health_cn),
+#                 .fns  = ~ .x - lag(.x, n = 1),
+#                 .names= "{.col}_fd")) %>% 
+#   ungroup %>% 
+#   drop_na(mil_health_cn_fd, mil_health_us_fd) %>% 
+#   mutate(across(.cols = c(mil_health_cn_fd, mil_health_us_fd),
+#                 .fns  = ~factor(.x, levels = c(0, -1, 1), labels = c("no_change", "lean_out", "lean_in"))))
+# 
+# 
+# full    <-  . ~ un_gdppc + un_gdppc2 + vdem + vdem2 + region
+# 
+# m <- mnp(formula = update(full, mil_health_cn_fd ~ mil_health_us_lag + .), 
+#          data    = d, n.draws = 2e3, burnin = 1e3)
+# m <- mnp(formula = update(full, mil_health_us_fd ~ mil_health_cn_lag + .), 
+#          data    = d, n.draws = 2e3, burnin = 1e3)
+# summary(m)
+```
+
 ### Bivariate probit analysis
 
 -   with `mvProbit` package
