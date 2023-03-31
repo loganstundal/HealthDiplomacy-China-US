@@ -166,3 +166,23 @@ Concerning military model fit:
 ### Multinomial analysis
 
 Analysis using `mil_health_qual` variable.
+
+### Bivariate probit analysis
+
+-   with `mvProbit` package
+
+```{r}
+# library(mvProbit)
+# m <- mvProbit(formula = cbind(mil_health_us, mil_health_cn) ~ un_gdppc + un_gdppc2 + un_infdeath_p1000, data = d)
+```
+
+-   with `VGAM` package
+
+```{r}
+# library(VGAM)
+# mm <- vglm(formula = cbind(mil_health_us, mil_health_cn) ~ un_gdppc + un_gdppc2 + 
+#              un_lifeexpec_yrs + un_lifeexpec_yrs2 +
+#              un_infdeath_p1000 + poly1 + poly2 + poly3, 
+#            data    = d, 
+#            family  = binom2.or)
+```
