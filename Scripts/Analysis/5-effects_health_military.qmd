@@ -1,0 +1,183 @@
+---
+title : "Analysis - Effects, military"
+editor: visual
+date  : "March 28, 2023"
+---
+
+# NOTES
+
+1.  implement dnorm() derivative method to calculate marginal effects rather than margins()
+    1.  see tmp-probit-effs-20230328.R
+2.  calculate inflection point for quadratic terms
+
+## Purpose
+
+Calculate marginal effects of military health models
+
+## Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(margins)
+library(kableExtra)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+d <- read_rds("../../Data/analysis-data/0-analysis_data.rds")
+load("../../Data/analysis-data/3-models_health-military.Rdata")
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Functions
+# ----------------------------------- #
+# source("../Functions/dynamics.R")
+# rm(conditional_eff, half_life, lrss_star, lrss_time,
+#    mr_star, mr_star_ev, mr_time)
+source("../Functions/themes.R")
+# ----------------------------------- #
+```
+
+### Create storage list
+
+```{r}
+military_effects <- list("tables"  = list(), 
+                         "figures" = list())
+```
+
+## Marginal effects - main results
+
+-   Inclusive of cubic polynomial terms - no proportional hazards over time.
+
+```{r}
+# dyn <- lapply(c("us_full", "cn_full"), function(x){
+#   probit_response(m = mods_military[[x]], vcv = mods_military_robust[[x]], sims = 1000) %>% 
+#     mutate(model := x)
+# }) %>% bind_rows()
+#
+# me_us <- dyn %>% filter(vr == "fd", model == "us_full") %>% 
+#   select(lb:ub) %>% apply(., 2, median)
+# 
+# me_cn <- dyn %>% filter(vr == "fd", model == "cn_full") %>% 
+#   select(lb:ub) %>% apply(., 2, median)
+# 
+# dyn_eff <- bind_rows(me_us, me_cn) %>% 
+#   mutate(model = c("us", "cn"), y = c(1, 2))
+# 
+# rm(me_us, me_cn, dyn)
+#
+# ceiling_dec <- function(x, level=1) round(x + 5*10^(-level-1), level)
+# 
+# ggplot(data = dyn_eff, aes(y = y, color = model)) + 
+#   geom_errorbar(aes(xmin = lb, xmax = ub), width = 0.1) + 
+#   geom_point(aes(x = md)) + 
+#   scale_x_continuous(labels = function(x){ x * 100}, 
+#                      limits = c(0, ceiling_dec(max(dyn_eff$ub))))
+```
+
+### Compute margins
+
+```{r}
+p_cn_on_us <- margins(model     = mods_military$us_full, 
+                      variables = "mil_health_cn", type = "response",
+                      vcov      = mods_military_robust$us_full)
+p_us_on_cn <- margins(model     = mods_military$cn_full, 
+                      variables = "mil_health_us", type = "response",
+                      vcov      = mods_military_robust$cn_full)
+
+p_cn_on_us <- summary(p_cn_on_us, level = 0.95) %>% as_tibble
+p_us_on_cn <- summary(p_us_on_cn, level = 0.95) %>% as_tibble
+
+eff_mil <- bind_rows(p_us_on_cn %>% select(AME, lower, upper) %>% mutate(model = "cn"),
+                     p_cn_on_us %>% select(AME, lower, upper) %>% mutate(model = "us")) %>% 
+  rename(md = AME, lb = lower, ub = upper) %>% 
+  mutate(y       = c(1, 2), 
+         y_label = c("CN response\nto US", "US response\nto CN")) %>% 
+  select(y_label, lb, md, ub, model, y)
+
+rm(p_cn_on_us, p_us_on_cn)
+```
+
+### Figure
+
+```{r}
+ceiling_dec <- function(x, level=1) round(x + 5*10^(-level-1), level)
+
+military_effects$figures$mil_probs <- ggplot(data = eff_mil, aes(y = y, color = model)) + 
+  geom_errorbar(aes(xmin = lb, xmax = ub), width = 0.1, linewidth = 0.5) + 
+  geom_point(aes(x = md), size = 0.8) + 
+  scale_x_continuous(labels = function(x){ x * 100}, 
+                     limits = c(-0.05, ceiling_dec(max(eff_mil$ub)))) + 
+  scale_y_continuous(name = "",
+                     breaks = eff_mil$y, labels = eff_mil$y_label) +
+  geom_vline(aes(xintercept = 0), linetype = "dotted", linewidth = 0.5) + 
+  labs(
+    title    = "Change in probability of military health presense",
+    subtitle = "in response to military health presenece of other power") + 
+  theme_coef(no_legend = T)
+
+rm(ceiling_dec)
+```
+
+```{r}
+png(filename = "../../Results/Figures/3-health_military-probabilities.png",
+    width    = 5, 
+    height   = 3,
+    units    = "in",
+    res      = 360)
+military_effects$figures$mil_probs
+dev.off()
+```
+
+### Table
+
+```{r}
+x <- eff_mil %>% 
+  mutate(across(.cols = c(lb, md, ub), 
+                .fns  = ~as.character(round(.x * 100, 2)))) %>% 
+  mutate(out = sprintf("%s [%s, %s]", md, lb, ub)) %>%
+  select(y_label, out)
+
+military_effects$tables$mil_probs <- kbl(x = x,
+                                         col.names = c("Effect", "Estimate"), 
+                                         booktabs  = TRUE)
+```
+
+## Marginal effects - controls
+
+#### GDP per capita
+
+```{r}
+m <- mods_military$us_full
+
+x <- model.matrix(m)
+x <- apply(x, 2, mean)
+x[str_starts(names(x), "region")] <- 0
+x["regionSub-Saharan Africa"] <- 1
+
+b <- coef(m)
+
+# xv <- quantile(d$un_gdppc, probs = 0.1)
+xv <- quantile(d$un_gdppc, probs = 0.9)
+
+x["un_gdppc"] <- xv
+x["un_gdppc2"] <- xv^2
+
+bx <- b["un_gdppc"] + b["un_gdppc2"] * xv
+
+(dnorm(x %*% b) * bx * log(1.1)) * 100
+
+```
