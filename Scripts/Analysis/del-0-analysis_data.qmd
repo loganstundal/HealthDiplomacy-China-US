@@ -1,0 +1,281 @@
+---
+title : "Analysis -  Analysis data"
+editor: visual
+date  : "March 6, 2023"
+---
+
+## Purpose
+
+Using complete dataset with all collected variables, calculate all transformations used for variables in models and export this data for use in all analysis scripts.
+
+## Setup
+
+```{r}
+#| warning: false
+#| message: false
+# ----------------------------------- #
+# Clear working environment  
+# ----------------------------------- #
+rm(list = ls())
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load required packages
+# ----------------------------------- #
+library(tidyverse)
+library(sf)
+library(spdep)
+# ----------------------------------- #
+
+# ----------------------------------- #
+# Load data
+# ----------------------------------- #
+# d <- read_rds("../../Data/tidy-data/9-hd-20230307.rds")
+d <- read_rds("../../Data/tidy-data/9-hd-20230326.rds")
+# ----------------------------------- #
+```
+
+## Tidy analysis data
+
+Calculate all transformations of variables used in analysis.
+
+Notes
+
+-   USAID data report 0 instances of US military health in 2000:2003, 3 in 2004 and 40 in 2005. Subsetting model data beginning 2005. This applies to all models for comparability.
+
+```{r}
+d <- d %>% 
+  filter(year %in% as.character(2005:2017)) %>% 
+  arrange(as.numeric(ccode), as.numeric(year)) %>% 
+  rename(mil_health_us_count = usaid_projects_mil, 
+         mil_health_cn_count = aiddata_projects_mil) %>% 
+  mutate(
+    mil_health_us = ifelse(mil_health_us_count > 0, 1, 0),
+    mil_health_cn = ifelse(mil_health_cn_count > 0, 1, 0),
+    
+    across(.cols = c(atop_us_nonagg, atop_cn_nonagg), 
+           .fns  = ~as.numeric(as.character(.x)))
+    ) %>%
+  mutate(mil_health_qual = case_when(
+    (mil_health_us & mil_health_cn)   ~ "Both",
+    (!mil_health_us & !mil_health_cn) ~ "Neither",
+    (!mil_health_us & mil_health_cn)  ~ "CN",
+    (mil_health_us & !mil_health_cn)  ~ "US"
+  )) 
+```
+
+Create time lags.
+
+```{r}
+d <- d %>% 
+  group_by(ccode) %>% 
+  mutate(across(.cols = c(dah_us_per, dah_cn_per),
+                .fns  = ~lag(.x, n = 1),
+                .names= "{.col}_lag"),
+         
+         across(.cols = c(mil_health_us, mil_health_cn),
+                .fns  = ~lag(.x, n = 1),
+                .names= "{.col}_lag")) %>% 
+  ungroup
+```
+
+Create independent variable operationalizations for modeling.
+
+```{r}
+d <- d %>%   
+  mutate(
+    cdist_us               = log(cdist_us),
+    cdist_cn               = log(cdist_cn),
+    un_gdppc               = log(un_gdppc),
+    un_gdppc2              = un_gdppc^2,
+    un_lifeexpec_yrs2      = un_lifeexpec_yrs^2,
+    un_infdeath_p1000      = log(un_infdeath_p1000),
+    ghdx_ncd_prevalence_pc = log(ghdx_ncd_prevalence / un_pop),
+    ghdx_cmd_prevalence_pc = log(ghdx_cmd_prevalence / un_pop),
+    emdat_deaths_total     = log((emdat_deaths_total / un_pop) + 1),
+    ged_major              = ifelse(ged_deaths_battle>1e3, 1, 0),
+    vdem2                  = vdem^2,
+    trade_chn_gdp          = (trade_chn / un_gdp) * 100,
+    trade_usa_gdp          = (trade_usa / un_gdp) * 100,
+    trade_net              = trade_usa_gdp - trade_chn_gdp) %>% 
+  group_by(year) %>% 
+  mutate(
+    emdat_disasters_peryr = (emdat_disasters_total / sum(emdat_disasters_total) )* 100
+  ) %>% 
+  ungroup 
+```
+
+Select relevant variables, drop missing values and sort by country and year indices.
+
+```{r}
+d <- d %>% 
+  select(cname, ccode, year, region,
+         
+         carea_sqkm, cdist_us, cdist_cn,
+         
+         dah_us, dah_us_per, dah_us_per_lag, 
+         dah_cn, dah_cn_per, dah_cn_per_lag,
+         
+         usaid_amount, usaid_amount_mil,
+         aiddata_amount, aiddata_amount_mil, 
+         
+         mil_health_us_count, mil_health_cn_count,
+         mil_health_qual, 
+         mil_health_us, mil_health_us_lag,
+         mil_health_cn, mil_health_cn_lag,
+         
+         cdist_us, cdist_cn, un_gdp, un_gdppc, un_gdppc2, 
+         un_lifeexpec_yrs, un_lifeexpec_yrs2, un_infdeath_p1000,
+         trade_chn_gdp, trade_usa_gdp, trade_net,
+         ghdx_ncd_prevalence_pc, ghdx_cmd_prevalence_pc,
+         emdat_disasters_total, emdat_deaths_total, emdat_disasters_peryr,
+         ged_major, atop_nonagg, atop_us_nonagg, atop_cn_nonagg, vdem, vdem2) %>% 
+  select(all_of(c("cname", "ccode", "year", "region", "carea_sqkm", "cdist_us", "cdist_cn")), 
+         sort(colnames(.))) 
+
+# Drop NA values on variables used in all models (note - these 4 suffice to
+# drop NAs across all model vars)
+d <- d %>% drop_na(vdem, un_lifeexpec_yrs, un_gdppc, mil_health_us_lag)
+
+# Arrange in format appropriate for spatial analysis (year-unit)
+d <- d %>% arrange(as.numeric(year), as.numeric(ccode))
+```
+
+### Drop outliers
+
+```{r}
+d <- d %>%   
+  filter(dah_us_per <= 10) %>%  
+  filter(dah_cn_per <= 10)
+```
+
+### Cubic polynomial for probits
+
+```{r}
+d <- d %>%
+  arrange(ccode, year) %>%
+  group_by(ccode) %>%
+  mutate(change = mil_health_us != mil_health_us_lag) %>%
+  mutate(poly1 = sequence(table(cumsum(change) + 1)),
+         poly2 = poly1^2,
+         poly3 = poly1^3) %>% 
+  relocate(contains("poly"), geometry, .after = last_col())
+```
+
+## Spacetime objects
+
+### Spatial Weights
+
+Generate spatial weights for STAR models
+
+```{r}
+spw <- function(yr, knn = FALSE, k = NULL, verbose = FALSE){
+  # Computes annual distance based weights
+  require(cshapes)
+  
+  if(verbose){cat(sprintf("\14Working on year: %s", yr))}
+  
+  # cap coords
+  tmp <- d %>% filter(year == yr) %>% st_drop_geometry() %>% select(ccode, year)
+  
+  caps <- cshp(date = as.Date(sprintf("%s-12-31", yr)), useGW = F) %>% 
+    st_drop_geometry %>% 
+    mutate(ccode = as.character(cowcode)) %>% 
+    select(ccode, caplong, caplat) 
+  
+  tmp <- left_join(tmp, caps, by = "ccode") %>% 
+    st_as_sf(., coords = c("caplong", "caplat")) %>% 
+    st_set_crs(., st_crs("+proj=longlat")) 
+
+  if(knn){
+    if(is.null(k)){k <- 3}
+    # knn
+    kn <- knearneigh(x  = tmp, 
+                     k  = k)
+    
+    knnb <- knn2nb(knn = kn, row.names = tmp$ccode)
+    
+    res  <- nb2mat(knnb)
+  }  else{
+    res <- st_distance(tmp) / 1e3
+    units(res) <- NULL
+    
+    # Inverse ditance
+    res      <- 1/res
+    diag(res) <- 0
+  }
+  
+  rownames(res) <- colnames(res) <- paste(tmp$ccode, yr, sep = "_")
+  
+  return(res)
+}
+```
+
+```{r}
+w_knn <- lapply(sort(unique(d$year)), spw, knn = TRUE, k = 3)
+w_dst <- lapply(sort(unique(d$year)), spw, knn = FALSE)
+```
+
+```{r}
+w_knn <- reduce(w_knn, .f = magic::adiag)
+w_dst <- reduce(w_dst, .f = magic::adiag)
+
+# rownames(w_knn) <- colnames(w_knn) <- paste(d$cname, d$year, sep = "_")
+# rownames(w_dst) <- colnames(w_dst) <- paste(d$cname, d$year, sep = "_")
+```
+
+### Spatial time lag matrix
+
+```{r}
+source("../../Scripts/Functions/panel_L.R")
+
+l_lag <- panel_l(data = d, id_unit = "ccode", id_time = "year")
+```
+
+### List Ws, Eigenvalues, RS matrics
+
+```{r}
+#| warning: false
+
+# List w objects
+lw_knn <- mat2listw(w_knn, style = "W")
+lw_dst <- mat2listw(w_dst, style = "W")
+
+# Row standardizes (only distance necessary)
+w_knn <- listw2mat(lw_knn)
+w_dst <- listw2mat(lw_dst)
+
+# Eigenvalues
+ev_knn <- eigen(w_knn, only.values = TRUE)$values %>% as.numeric
+ev_dst <- eigen(w_dst, only.values = TRUE)$values %>% as.numeric
+ev_lmt <- eigen(l_lag, only.values = TRUE)$values %>% as.numeric
+```
+
+#### Tidy spatial into list
+
+```{r}
+d_spatial <- list(
+  "w_knn"  = w_knn,
+  "w_dst"  = w_dst,
+  "l_lag"  = l_lag,
+  "lw_knn" = lw_knn,
+  "lw_dst" = lw_dst,
+  "ev_knn" = ev_knn,
+  "ev_dst" = ev_dst,
+  "ev_lmt" = ev_lmt
+)
+
+rm(lw_dst, lw_knn, w_dst, w_knn, ev_knn, ev_dst, l_lag, ev_lmt, spw)
+```
+
+### Save
+
+```{r}
+write_rds(x    = d, 
+          file = "../../Data/analysis-data/0-analysis_data.rds")
+
+save(d_spatial, 
+     file = "../../Data/analysis-data/0-spatial_weights.rdata")
+
+rm(list = ls())
+```
